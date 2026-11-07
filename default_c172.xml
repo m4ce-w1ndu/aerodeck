@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Profile xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" Version="1" IsStockProfile="false" xmlns="http://www.fsgs.com/SPAD">
+  <Name>Cessna 172 Skyhawk MSFS 2020</Name>
+  <Variables>
+    <Variable Name="LOCAL:AUTOPILOT_TARGET_ALT" Scope="PROFILE" Value="5000" Type="System.Double" />
+  </Variables>
+  <Options>
+    <Option Key="AIRCRAFT_NAME" Value="Cessna 172 Skyhawk G1000 Asobo" />
+  </Options>
+  <Devices>
+    <!-- Saitek Multi Panel (Autopilot & Flaps) -->
+    <Device VendorID="0x06A3" ProductID="0x0D06" DevicePath="" Serial="SPAD0D06" DeviceIndex="0" Name="Saitek Multi Panel" ID="0D06_0">
+      <DevicePage ID="00000000-0000-0000-0000-000000000000" IsDefaultPage="true" Name="Default">
+        <Events>
+          <Event BoundTo="AP_BUTTON" ConfigID="AP_TOGGLE">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESSED" Priority="0" IsFinal="true">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:AP_MASTER" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="TUNER_INNER_INC" ConfigID="ALT_INCREASE">
+            <EventDefinitions>
+              <EventDefinition Trigger="CLOCKWISE" Priority="0" IsFinal="true">
+                <EventConditions>
+                  <EventCondition Target="LOCAL:AUTOPILOT_TARGET_ALT" Comparator="Less" Value="50000" />
+                </EventConditions>
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:AP_ALT_VAR_INC" />
+                  <EventActionChangeValue Target="LOCAL:AUTOPILOT_TARGET_ALT" Operation="Increment" Value="100" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="TUNER_INNER_DEC" ConfigID="ALT_DECREASE">
+            <EventDefinitions>
+              <EventDefinition Trigger="COUNTER_CLOCKWISE" Priority="0" IsFinal="true">
+                <EventConditions>
+                  <EventCondition Target="LOCAL:AUTOPILOT_TARGET_ALT" Comparator="Greater" Value="0" />
+                </EventConditions>
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:AP_ALT_VAR_DEC" />
+                  <EventActionChangeValue Target="LOCAL:AUTOPILOT_TARGET_ALT" Operation="Decrement" Value="100" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+        </Events>
+      </DevicePage>
+    </Device>
+
+    <!-- Saitek Switch Panel (Gear & Magnetos) -->
+    <Device VendorID="0x06A3" ProductID="0x0D67" DevicePath="" Serial="SPAD0D67" DeviceIndex="0" Name="Saitek Switch Panel" ID="0D67_0">
+      <DevicePage ID="00000000-0000-0000-0000-000000000001" IsDefaultPage="true" Name="Default">
+        <Events>
+          <Event BoundTo="GEAR_DOWN" ConfigID="GEAR_EXTEND">
+            <EventDefinitions>
+              <EventDefinition Trigger="ON" Priority="0" IsFinal="true">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:GEAR_DOWN" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="GEAR_UP" ConfigID="GEAR_RETRACT">
+            <EventDefinitions>
+              <EventDefinition Trigger="ON" Priority="0" IsFinal="true">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:GEAR_UP" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+        </Events>
+      </DevicePage>
+    </Device>
+  </Devices>
+</Profile>

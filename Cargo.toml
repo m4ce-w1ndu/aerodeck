@@ -1,0 +1,24 @@
+[package]
+name = "spad-linx"
+version = "0.1.0"
+edition = "2021"
+description = "Clean-room cross-platform SPAD.neXt profile runner and MSFS LVAR Bridge controller for Linux/Steam Proton"
+
+[dependencies]
+tokio = { version = "1.40", features = ["full"] }
+byteorder = "1.5"
+serde = { version = "1.0", features = ["derive"] }
+quick-xml = { version = "0.37", features = ["serialize"] }
+clap = { version = "4.5", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2.0"
+anyhow = "1.0"
+hidapi = { version = "2.6", optional = true }
+regex = "1.10"
+colored = "2.1"
+futures = "0.3"
+
+[features]
+default = ["hardware"]
+hardware = ["dep:hidapi"]

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, Mutex};
@@ -6,6 +7,7 @@ use tokio::time::{sleep, Duration};
 
 use crate::bridge::{SpadLvarBridge, CALC_RET_DOUBLE};
 use crate::hardware::device::DeviceEvent;
+use crate::hardware::enumerator::{ConnectedDevice, DeviceEnumerator};
 use crate::profile::{ProfileExecutor, ProfileParser, SpadProfile};
 use crate::simconnect::SimConnectClient;
 
@@ -14,6 +16,7 @@ pub enum GuiEvent {
     SimConnectStatus { connected: bool, message: String },
     BridgeStatus { active: bool, lvar_count: usize },
     AircraftChanged(String),
+    DevicesUpdated(Vec<ConnectedDevice>),
     InputTriggered {
         device: String,
         bound_to: String,
@@ -36,6 +39,7 @@ pub enum GuiCommand {
     SetLvar { name: String, value: f64 },
     ExecCalculatorCode { code: String },
     RequestLvarScan,
+    RescanDevices,
     SimulateInput { device: String, bound_to: String, action: String },
     LoadProfile(PathBuf),
     SaveProfile(PathBuf),
@@ -96,6 +100,12 @@ async fn run_backend_loop(
             }
         }
     }
+
+    // Initial device enumeration and listener startup
+    let devices = DeviceEnumerator::enumerate_all();
+    let _ = event_tx.send(GuiEvent::DevicesUpdated(devices.clone()));
+    let shutdown = Arc::new(AtomicBool::new(false));
+    DeviceEnumerator::start_hardware_listeners(&devices, event_tx.clone(), shutdown.clone());
 
     loop {
         tokio::select! {
@@ -241,6 +251,11 @@ async fn run_backend_loop(
                             });
                             let _ = event_tx.send(GuiEvent::LvarsDiscovered(names));
                         }
+                    }
+                    Some(GuiCommand::RescanDevices) => {
+                        let devs = DeviceEnumerator::enumerate_all();
+                        let _ = event_tx.send(GuiEvent::DevicesUpdated(devs.clone()));
+                        DeviceEnumerator::start_hardware_listeners(&devs, event_tx.clone(), shutdown.clone());
                     }
                     Some(GuiCommand::SimulateInput { device, bound_to, action }) => {
                         let _ = event_tx.send(GuiEvent::InputTriggered {

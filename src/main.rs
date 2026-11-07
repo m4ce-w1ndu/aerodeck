@@ -306,23 +306,23 @@ async fn run_cli_command(cmd: Commands) -> Result<()> {
 
         Commands::Devices { action } => match action {
             DeviceCommands::Scan => {
-                println!("Scanning USB bus for Saitek / Logitech flight panels...");
-                #[cfg(feature = "hardware")]
-                {
-                    let devs = UsbPanelScanner::scan_devices();
-                    if devs.is_empty() {
-                        println!("No physical Saitek panels detected on USB bus (udev / hidraw).");
-                        println!("Note: Check udev rules or permissions if devices are plugged in.");
-                    } else {
-                        println!("{} Found {} panel(s):", "✔".green().bold(), devs.len());
-                        for (vid, pid, mfg, prod) in devs {
-                            println!("  * [{:04X}:{:04X}] {} - {}", vid, pid, mfg, prod.bold().green());
-                        }
+                println!("Scanning connected flight simulation controllers and panels...");
+                let devs = hardware::DeviceEnumerator::enumerate_all();
+                println!("{} Found {} flight & control device(s):", "✔".green().bold(), devs.len());
+                for dev in devs {
+                    println!("\n  {} [{}] (VID: {:04X}, PID: {:04X})",
+                        dev.name.bold().green(),
+                        dev.category.badge().yellow(),
+                        dev.vendor_id,
+                        dev.product_id
+                    );
+                    if let Some(ref path) = dev.path {
+                        println!("    Path: {:?}", path);
                     }
-                }
-                #[cfg(not(feature = "hardware"))]
-                {
-                    println!("Compiled without 'hardware' feature.");
+                    println!("    Buttons ({}): {}", dev.buttons.len(), dev.buttons.join(", "));
+                    if !dev.axes.is_empty() {
+                        println!("    Axes ({}): {}", dev.axes.len(), dev.axes.join(", "));
+                    }
                 }
             }
         },

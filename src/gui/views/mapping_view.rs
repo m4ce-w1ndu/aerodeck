@@ -2,9 +2,10 @@ use eframe::egui::{self, Color32, RichText, Ui, Vec2};
 use std::time::Instant;
 
 use crate::gui::backend::GuiCommand;
-use crate::gui::presets::{STANDARD_DEVICES, SIMCONNECT_PRESETS, COMMON_CALCULATOR_CODES};
+use crate::gui::presets::{COMMON_CALCULATOR_CODES, SIMCONNECT_PRESETS};
+use crate::hardware::enumerator::ConnectedDevice;
 use crate::profile::schema::{
-    EventActionControl, EventActionScript, EventActionItem, EventConditionItem, EventConditionSimple,
+    EventActionControl, EventActionItem, EventActionScript, EventConditionItem, EventConditionSimple,
     EventConditionsList, EventDefinition, EventDefinitionsList, EventList, SpadEvent, SpadProfile,
 };
 
@@ -13,6 +14,7 @@ pub struct MappingViewState {
     pub selected_input: String,
     pub filter_query: String,
     pub follow_active_input: bool,
+    pub input_type_filter: InputFilterType,
 
     // Add action form state
     pub new_action_type: ActionTypeChoice,
@@ -29,6 +31,13 @@ pub struct MappingViewState {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum InputFilterType {
+    All,
+    Buttons,
+    Axes,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ActionTypeChoice {
     SimConnectPreset,
     SimConnectCustom,
@@ -40,9 +49,10 @@ impl Default for MappingViewState {
     fn default() -> Self {
         Self {
             selected_device_idx: 0,
-            selected_input: "SWITCH_BATTERY".to_string(),
+            selected_input: String::new(),
             filter_query: String::new(),
             follow_active_input: true,
+            input_type_filter: InputFilterType::All,
             new_action_type: ActionTypeChoice::SimConnectPreset,
             selected_preset_idx: 0,
             custom_target: "SIMCONNECT:TOGGLE_MASTER_BATTERY".to_string(),
@@ -63,9 +73,10 @@ pub fn render_mapping_view(
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<GuiCommand>,
     last_input: &Option<(String, String, String, Instant)>,
     discovered_lvars: &[String],
+    devices: &[ConnectedDevice],
 ) {
-    // 1. TOP BANNER: Live Input Detection Notification
-    render_live_input_banner(ui, state, cmd_tx, last_input);
+    // 1. TOP BANNER: Live Real Hardware Input Detection
+    render_live_input_banner(ui, state, last_input, devices);
 
     ui.add_space(8.0);
     ui.separator();
@@ -73,19 +84,19 @@ pub fn render_mapping_view(
 
     // 2. MAIN 2-COLUMN SPLIT: Left = Device & Input List, Right = Mapping & Action Editor
     ui.columns(2, |columns| {
-        // --- LEFT COLUMN: Device selector & Inputs ---
-        render_device_and_input_column(&mut columns[0], state, profile, last_input);
+        // --- LEFT COLUMN: Connected Hardware Device selector & Inputs ---
+        render_device_and_input_column(&mut columns[0], state, profile, last_input, devices, cmd_tx);
 
         // --- RIGHT COLUMN: Mappings & Action Configurator ---
-        render_action_editor_column(&mut columns[1], state, profile, cmd_tx, discovered_lvars);
+        render_action_editor_column(&mut columns[1], state, profile, cmd_tx, discovered_lvars, devices);
     });
 }
 
 fn render_live_input_banner(
     ui: &mut Ui,
     state: &mut MappingViewState,
-    _cmd_tx: &tokio::sync::mpsc::UnboundedSender<GuiCommand>,
     last_input: &Option<(String, String, String, Instant)>,
+    devices: &[ConnectedDevice],
 ) {
     ui.horizontal(|ui| {
         ui.label(RichText::new("HARDWARE INPUT MONITOR:").strong());
@@ -94,7 +105,7 @@ fn render_live_input_banner(
             let elapsed_ms = inst.elapsed().as_millis();
             let is_recent = elapsed_ms < 1500;
             let bg_color = if is_recent {
-                Color32::from_rgb(0, 100, 30)
+                Color32::from_rgb(0, 110, 40)
             } else {
                 Color32::from_rgb(40, 45, 55)
             };
@@ -113,9 +124,8 @@ fn render_live_input_banner(
 
             // Follow active input if enabled
             if state.follow_active_input && is_recent && elapsed_ms < 200 {
-                // Find matching device
-                for (idx, d) in STANDARD_DEVICES.iter().enumerate() {
-                    if d.inputs.contains(&bound.as_str()) || d.id == dev.as_str() {
+                for (idx, d) in devices.iter().enumerate() {
+                    if d.name == dev.as_str() || d.id == dev.as_str() || d.inputs.iter().any(|i| i == bound) {
                         state.selected_device_idx = idx;
                         state.selected_input = bound.clone();
                         break;
@@ -123,7 +133,7 @@ fn render_live_input_banner(
                 }
             }
         } else {
-            ui.label(RichText::new("Awaiting controller input... Move a switch or turn a knob on your panel").italics().color(Color32::GRAY));
+            ui.label(RichText::new("Awaiting controller input... Move a switch or turn a knob on your physical hardware").italics().color(Color32::GRAY));
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -137,29 +147,87 @@ fn render_device_and_input_column(
     state: &mut MappingViewState,
     profile: &mut Option<SpadProfile>,
     last_input: &Option<(String, String, String, Instant)>,
+    devices: &[ConnectedDevice],
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<GuiCommand>,
 ) {
-    ui.heading(RichText::new("Controllers & Inputs").color(Color32::from_rgb(100, 180, 255)));
+    ui.heading(RichText::new("Connected Flight Hardware & Inputs").color(Color32::from_rgb(100, 180, 255)));
     ui.add_space(4.0);
 
-    // Device selector dropdown
+    if devices.is_empty() {
+        ui.label(RichText::new("No controllers detected. Plug in your joystick, throttle, or yoke and click Rescan.").color(Color32::LIGHT_RED));
+        if ui.button("🔄 Rescan Controllers").clicked() {
+            let _ = cmd_tx.send(GuiCommand::RescanDevices);
+        }
+        return;
+    }
+
+    if state.selected_device_idx >= devices.len() {
+        state.selected_device_idx = 0;
+    }
+
+    let active_device = &devices[state.selected_device_idx];
+
+    // Ensure selected input is valid for this device
+    if state.selected_input.is_empty() && !active_device.inputs.is_empty() {
+        state.selected_input = active_device.inputs[0].clone();
+    }
+
+    // Device selector dropdown & Rescan button
     ui.horizontal(|ui| {
-        ui.label("Selected Device:");
-        egui::ComboBox::from_id_salt("device_select_combo")
-            .width(260.0)
-            .selected_text(STANDARD_DEVICES[state.selected_device_idx].name)
+        ui.label("Active Device:");
+        let selected_text = format!("{} [{}]", active_device.name, active_device.category.badge());
+        egui::ComboBox::from_id_salt("connected_device_combo")
+            .width(280.0)
+            .selected_text(selected_text)
             .show_ui(ui, |ui| {
-                for (idx, dev) in STANDARD_DEVICES.iter().enumerate() {
-                    ui.selectable_value(&mut state.selected_device_idx, idx, dev.name);
+                for (idx, dev) in devices.iter().enumerate() {
+                    let label = format!("{} [{}]", dev.name, dev.category.badge());
+                    if ui.selectable_value(&mut state.selected_device_idx, idx, label).clicked() {
+                        if !dev.inputs.is_empty() {
+                            state.selected_input = dev.inputs[0].clone();
+                        }
+                    }
                 }
             });
+
+        if ui.button("🔄 Rescan").clicked() {
+            let _ = cmd_tx.send(GuiCommand::RescanDevices);
+        }
     });
+
+    ui.add_space(4.0);
+
+    // Device technical info pill
+    egui::Frame::none()
+        .fill(Color32::from_rgb(25, 30, 38))
+        .rounding(3.0)
+        .inner_margin(Vec2::new(6.0, 3.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("VID: {:04X}  PID: {:04X}", active_device.vendor_id, active_device.product_id)).color(Color32::LIGHT_GRAY).small());
+                ui.separator();
+                ui.label(RichText::new(format!("{} Buttons", active_device.buttons.len())).color(Color32::from_rgb(0, 220, 150)).small());
+                ui.separator();
+                ui.label(RichText::new(format!("{} Axes", active_device.axes.len())).color(Color32::from_rgb(0, 200, 255)).small());
+                if let Some(ref p) = active_device.path {
+                    ui.separator();
+                    ui.label(RichText::new(format!("{:?}", p)).color(Color32::GRAY).small());
+                }
+            });
+        });
 
     ui.add_space(6.0);
 
-    // Input filter box
+    // Filter controls: Type filter (All / Buttons / Axes) + Search box
     ui.horizontal(|ui| {
+        ui.selectable_value(&mut state.input_type_filter, InputFilterType::All, "All");
+        ui.selectable_value(&mut state.input_type_filter, InputFilterType::Buttons, format!("Buttons ({})", active_device.buttons.len()));
+        ui.selectable_value(&mut state.input_type_filter, InputFilterType::Axes, format!("Axes ({})", active_device.axes.len()));
+
+        ui.separator();
+
         ui.label("Search:");
-        ui.text_edit_singleline(&mut state.filter_query);
+        ui.add(egui::TextEdit::singleline(&mut state.filter_query).desired_width(100.0));
         if ui.button("✖").clicked() {
             state.filter_query.clear();
         }
@@ -167,22 +235,26 @@ fn render_device_and_input_column(
 
     ui.add_space(4.0);
 
-    let active_device = &STANDARD_DEVICES[state.selected_device_idx];
+    let inputs_to_display: Vec<&String> = match state.input_type_filter {
+        InputFilterType::All => active_device.inputs.iter().collect(),
+        InputFilterType::Buttons => active_device.buttons.iter().collect(),
+        InputFilterType::Axes => active_device.axes.iter().collect(),
+    };
 
     // Scrollable input list
     egui::ScrollArea::vertical()
-        .max_height(480.0)
+        .max_height(460.0)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
 
-            for &inp in active_device.inputs {
+            for inp in inputs_to_display {
                 if !state.filter_query.is_empty()
                     && !inp.to_lowercase().contains(&state.filter_query.to_lowercase())
                 {
                     continue;
                 }
 
-                let is_selected = state.selected_input == inp;
+                let is_selected = &state.selected_input == inp;
                 let is_last_active = last_input
                     .as_ref()
                     .map(|(_, b, _, inst)| b == inp && inst.elapsed().as_millis() < 2000)
@@ -217,8 +289,15 @@ fn render_action_editor_column(
     profile: &mut Option<SpadProfile>,
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<GuiCommand>,
     discovered_lvars: &[String],
+    devices: &[ConnectedDevice],
 ) {
-    ui.heading(RichText::new(format!("Mapping: {}", state.selected_input)).color(Color32::from_rgb(255, 200, 100)));
+    let display_input = if state.selected_input.is_empty() {
+        "Select an input on the left"
+    } else {
+        &state.selected_input
+    };
+
+    ui.heading(RichText::new(format!("Mapping: {}", display_input)).color(Color32::from_rgb(255, 200, 100)));
     ui.add_space(4.0);
 
     // 1. Current bindings list
@@ -313,8 +392,8 @@ fn render_action_editor_column(
             ui.label("Event Trigger:");
             ui.selectable_value(&mut state.selected_trigger, "PRESS".to_string(), "On Press / Activate");
             ui.selectable_value(&mut state.selected_trigger, "RELEASE".to_string(), "On Release");
-            ui.selectable_value(&mut state.selected_trigger, "CW".to_string(), "Clockwise");
-            ui.selectable_value(&mut state.selected_trigger, "CCW".to_string(), "Counter-Clockwise");
+            ui.selectable_value(&mut state.selected_trigger, "CW".to_string(), "Clockwise / Increment");
+            ui.selectable_value(&mut state.selected_trigger, "CCW".to_string(), "Counter-Clockwise / Decrement");
         });
 
         ui.add_space(4.0);
@@ -419,7 +498,9 @@ fn render_action_editor_column(
         // Submit button
         ui.horizontal(|ui| {
             if ui.button(RichText::new("➕ Add Action to Selected Input").color(Color32::from_rgb(50, 255, 120)).strong()).clicked() {
-                add_action_to_profile(profile, state);
+                if !devices.is_empty() && !state.selected_input.is_empty() {
+                    add_action_to_profile(profile, state, devices);
+                }
             }
 
             if ui.button("Test Action in Simulator").clicked() {
@@ -471,7 +552,12 @@ fn count_actions_for_input(profile: &Option<SpadProfile>, input_name: &str) -> u
     0
 }
 
-fn add_action_to_profile(profile: &mut Option<SpadProfile>, state: &MappingViewState) {
+fn add_action_to_profile(profile: &mut Option<SpadProfile>, state: &MappingViewState, devices: &[ConnectedDevice]) {
+    if devices.is_empty() || state.selected_device_idx >= devices.len() {
+        return;
+    }
+    let active_dev = &devices[state.selected_device_idx];
+
     if profile.is_none() {
         *profile = Some(SpadProfile {
             version: Some(1),
@@ -488,21 +574,23 @@ fn add_action_to_profile(profile: &mut Option<SpadProfile>, state: &MappingViewS
         prof.devices = Some(crate::profile::schema::DeviceList { items: Vec::new() });
     }
 
-    let active_dev_desc = &STANDARD_DEVICES[state.selected_device_idx];
     let devs = prof.devices.as_mut().unwrap();
 
-    // Find or create device
-    let dev_idx = match devs.items.iter().position(|d| d.product_id.as_deref() == Some(&format!("{:04X}", active_dev_desc.product_id))) {
+    // Find or create device profile matching active device
+    let dev_idx = match devs.items.iter().position(|d| {
+        d.id.as_deref() == Some(&active_dev.id)
+            || d.product_id.as_deref() == Some(&format!("{:04X}", active_dev.product_id))
+    }) {
         Some(idx) => idx,
         None => {
             devs.items.push(crate::profile::schema::DeviceProfile {
-                vendor_id: Some(format!("{:04X}", active_dev_desc.vendor_id)),
-                product_id: Some(format!("{:04X}", active_dev_desc.product_id)),
-                device_path: None,
+                vendor_id: Some(format!("{:04X}", active_dev.vendor_id)),
+                product_id: Some(format!("{:04X}", active_dev.product_id)),
+                device_path: active_dev.path.as_ref().map(|p| p.to_string_lossy().to_string()),
                 serial: None,
                 device_index: Some(0),
-                name: Some(active_dev_desc.name.to_string()),
-                id: Some(active_dev_desc.id.to_string()),
+                name: Some(active_dev.name.clone()),
+                id: Some(active_dev.id.clone()),
                 pages: vec![crate::profile::schema::DevicePage {
                     id: Some("Default".to_string()),
                     is_default: Some(true),

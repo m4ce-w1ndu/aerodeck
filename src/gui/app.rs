@@ -10,6 +10,7 @@ use crate::gui::views::lvar_view::{render_lvar_view, LvarViewState};
 use crate::gui::views::mapping_view::{render_mapping_view, MappingViewState};
 use crate::gui::views::proton_view::{render_proton_view, ProtonViewState};
 use crate::gui::views::virtual_panel_view::{render_virtual_panel_view, VirtualPanelViewState};
+use crate::hardware::enumerator::{ConnectedDevice, DeviceEnumerator};
 use crate::profile::schema::SpadProfile;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -40,6 +41,9 @@ pub struct SpadLinxApp {
     profile: Option<SpadProfile>,
     profile_path_input: String,
     profile_name: String,
+
+    // Real connected devices
+    devices: Vec<ConnectedDevice>,
 
     // Real-time telemetry
     last_input: Option<(String, String, String, Instant)>,
@@ -83,6 +87,7 @@ impl SpadLinxApp {
             profile: None,
             profile_path_input: initial_path_str,
             profile_name: "No Profile Loaded".to_string(),
+            devices: DeviceEnumerator::enumerate_all(),
             last_input: None,
             discovered_lvars: Vec::new(),
             live_lvar_values: HashMap::new(),
@@ -135,6 +140,9 @@ impl SpadLinxApp {
                         level: "INFO".to_string(),
                         text: format!("Active aircraft: {}", name),
                     });
+                }
+                GuiEvent::DevicesUpdated(devs) => {
+                    self.devices = devs;
                 }
                 GuiEvent::InputTriggered { device, bound_to, action, time } => {
                     self.last_input = Some((device.clone(), bound_to.clone(), action.clone(), time));
@@ -235,6 +243,7 @@ impl eframe::App for SpadLinxApp {
                         &self.cmd_tx,
                         &self.last_input,
                         &self.discovered_lvars,
+                        &self.devices,
                     );
                 }
                 ActiveTab::Lvars => {

@@ -24,10 +24,10 @@ use proton::ProtonConfigurator;
 use simconnect::SimConnectClient;
 
 #[derive(Parser)]
-#[command(name = "spad-linx")]
-#[command(author = "spad-linx developers")]
+#[command(name = "aerodeck")]
+#[command(author = "AeroDeck developers")]
 #[command(version = "0.1.0")]
-#[command(about = "Clean-room cross-platform SPAD.neXt profile engine & MSFS LVAR Bridge for Linux / Steam Proton", long_about = None)]
+#[command(about = "AeroDeck: Advanced Flight Simulation Hardware & Telemetry Suite (SPAD.neXt Profile Compatible)", long_about = None)]
 struct Cli {
     #[arg(short, long, default_value = "info")]
     log_level: String,
@@ -47,7 +47,7 @@ enum Commands {
         simconnect: String,
     },
 
-    /// Run SPAD.neXt profile with SimConnect and hardware controllers
+    /// Run profile with SimConnect and flight hardware (SPAD.neXt profile compatible)
     Run {
         #[arg(short, long)]
         profile: PathBuf,
@@ -56,7 +56,7 @@ enum Commands {
         simconnect: String,
     },
 
-    /// Profile management commands
+    /// Profile management commands (SPAD.neXt compatible XML profiles)
     Profile {
         #[command(subcommand)]
         action: ProfileCommands,
@@ -68,7 +68,7 @@ enum Commands {
         action: BridgeCommands,
     },
 
-    /// Scan and test USB hardware flight panels
+    /// Scan and test connected hardware flight controllers and panels
     Devices {
         #[command(subcommand)]
         action: DeviceCommands,
@@ -89,12 +89,12 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum ProfileCommands {
-    /// Inspect a SPAD.neXt profile file
+    /// Inspect a SPAD.neXt compatible profile file
     Inspect {
         #[arg(short, long)]
         path: PathBuf,
     },
-    /// Generate a complete sample SPAD.neXt XML profile
+    /// Generate a sample SPAD.neXt compatible XML profile
     CreateSample {
         #[arg(short, long, default_value = "default_c172.xml")]
         output: PathBuf,
@@ -157,19 +157,19 @@ fn main() -> Result<()> {
     match cli.command {
         None => {
             println!("{}", "=========================================================".bright_blue());
-            println!("{}", "      SPAD-LINX: Clean-room Flight Sim Hardware Bridge   ".bright_cyan().bold());
-            println!("{}", "      Cross-Platform SPAD.neXt Profile Engine for Linux  ".bright_cyan());
+            println!("{}", "      AERODECK: Flight Sim Hardware & Telemetry Suite     ".bright_cyan().bold());
+            println!("{}", "     Compatible with SPAD.neXt Profiles (Linux/Windows)  ".bright_cyan());
             println!("{}", "=========================================================".bright_blue());
-            println!("Launching SPAD-LINX Interactive Graphical Interface...");
+            println!("Launching AeroDeck Interactive Graphical Interface...");
             gui::run_gui(None, "127.0.0.1".to_string(), 45454)
         }
         Some(Commands::Gui { profile, simconnect }) => {
             let (host, port) = parse_host_port(&simconnect);
             println!("{}", "=========================================================".bright_blue());
-            println!("{}", "      SPAD-LINX: Clean-room Flight Sim Hardware Bridge   ".bright_cyan().bold());
-            println!("{}", "      Cross-Platform SPAD.neXt Profile Engine for Linux  ".bright_cyan());
+            println!("{}", "      AERODECK: Flight Sim Hardware & Telemetry Suite     ".bright_cyan().bold());
+            println!("{}", "     Compatible with SPAD.neXt Profiles (Linux/Windows)  ".bright_cyan());
             println!("{}", "=========================================================".bright_blue());
-            println!("Launching SPAD-LINX Interactive Graphical Interface...");
+            println!("Launching AeroDeck Interactive Graphical Interface...");
             gui::run_gui(profile, host, port)
         }
         Some(cmd) => {
@@ -191,19 +191,19 @@ fn parse_host_port(s: &str) -> (String, u16) {
 
 async fn run_cli_command(cmd: Commands) -> Result<()> {
     println!("{}", "=========================================================".bright_blue());
-    println!("{}", "      SPAD-LINX: Clean-room Flight Sim Hardware Bridge   ".bright_cyan().bold());
-    println!("{}", "      Cross-Platform SPAD.neXt Profile Engine for Linux  ".bright_cyan());
+    println!("{}", "      AERODECK: Flight Sim Hardware & Telemetry Suite     ".bright_cyan().bold());
+    println!("{}", "     Compatible with SPAD.neXt Profiles (Linux/Windows)  ".bright_cyan());
     println!("{}", "=========================================================".bright_blue());
 
     match cmd {
         Commands::Gui { .. } => unreachable!(),
         Commands::Run { profile, simconnect } => {
-            info!("Loading SPAD.neXt profile from {:?}", profile);
+            info!("Loading profile from {:?}", profile);
             let prof = ProfileParser::parse_file(&profile)?;
             println!("{} Loaded profile: {}", "✔".green().bold(), prof.name.as_deref().unwrap_or("Unnamed").bold());
 
             let sc = Arc::new(SimConnectClient::connect(&simconnect).await?);
-            sc.open("spad-linx").await?;
+            sc.open("aerodeck").await?;
 
             let bridge = Arc::new(SpadLvarBridge::new(sc.clone()));
             bridge.start().await?;
@@ -252,14 +252,14 @@ async fn run_cli_command(cmd: Commands) -> Result<()> {
             ProfileCommands::CreateSample { output } => {
                 let sample_xml = create_default_spad_profile();
                 std::fs::write(&output, sample_xml)?;
-                println!("{} Sample SPAD.neXt profile written to {:?}", "✔".green().bold(), output);
+                println!("{} Sample XML profile written to {:?}", "✔".green().bold(), output);
             }
         },
 
         Commands::Bridge { action } => match action {
             BridgeCommands::ListLvars { simconnect } => {
                 let sc = Arc::new(SimConnectClient::connect(&simconnect).await?);
-                sc.open("spad-linx-lvar-scan").await?;
+                sc.open("aerodeck-lvar-scan").await?;
 
                 let bridge = SpadLvarBridge::new(sc.clone());
                 bridge.start().await?;
@@ -281,7 +281,7 @@ async fn run_cli_command(cmd: Commands) -> Result<()> {
             }
             BridgeCommands::Exec { code, simconnect, return_type } => {
                 let sc = Arc::new(SimConnectClient::connect(&simconnect).await?);
-                sc.open("spad-linx-exec").await?;
+                sc.open("aerodeck-exec").await?;
 
                 let bridge = SpadLvarBridge::new(sc.clone());
                 bridge.start().await?;

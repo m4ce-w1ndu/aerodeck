@@ -1,26 +1,25 @@
-# SPAD-LINX: Clean-Room Flight Simulation Hardware & Profile Bridge
+# AeroDeck: Advanced Flight Simulation Hardware & Telemetry Suite
 
-A high-performance, cross-platform, clean-room implementation of **SPAD.neXt** profile execution and **MSFS 2020 LVAR Bridge** communication for **Linux across Steam Proton** and Windows, written in **Rust**.
+A high-performance, cross-platform flight simulation hardware engine and controller bridge for **Linux across Steam Proton** and Windows, written in **Rust** with full **SPAD.neXt profile compatibility**.
 
 ---
 
 ## 1. Executive Summary & Architecture
 
-SPAD.neXt is the industry-standard hardware integration suite for flight simulation controllers (such as Logitech/Saitek Radio, Multi, Switch, and BIP panels). However, running SPAD.neXt natively on Linux under Steam Proton has historically been a significant barrier due to Windows-specific driver dependencies, WCF/WPF UI bindings, and named pipe restrictions.
+Modern flight simulation enthusiasts utilize specialized flight controls, joysticks, throttle quadrants, rudder pedals, and hardware panels (such as Logitech/Saitek Radio, Multi, Switch, and BIP panels). However, running flight controller mapping suites natively on Linux under Steam Proton has historically been a significant barrier due to Windows-specific driver dependencies, WCF/WPF UI bindings, and named pipe restrictions.
 
-`spad-linx` solves this by providing:
+**AeroDeck** solves this by providing:
 1. **Zero-Overhead Linux-to-Proton SimConnect TCP Engine**: Connects natively to Microsoft Flight Simulator 2020/2024 running inside Steam Proton with sub-millisecond latency.
-2. **100% Protocol-Compatible SPAD MSFS WASM Bridge Client**: Speaks the exact binary ClientDataArea protocol implemented by `SPAD-bridge-module.wasm`. Supports LVAR discovery, RPN calculator code execution, HVARs, BVARs, and continuous variable streaming.
-3. **SPAD.neXt XML Profile Engine**: Full deserialization and execution of SPAD.neXt `.xml` profiles (`xmlns="http://www.fsgs.com/SPAD"`), supporting multi-page devices, conditions, comparators, and event actions.
-4. **Native USB HID Panel Drivers**: Direct Linux `hidraw` drivers for Saitek Multi, Radio, Switch, and BIP panels with 7-segment display encoding and LED management—plus an interactive terminal virtual panel emulator.
+2. **SPAD.neXt Profile Compatibility**: Full deserialization, editing, and execution of SPAD.neXt `.xml` profiles (`xmlns="http://www.fsgs.com/SPAD"`), allowing pilots to reuse and import existing aircraft profiles without modification.
+3. **Full Analog Axes Engine**: Real-time calibration, deadband jitter filtration, invert options, and graphical position bars for flight sticks, yokes, throttles, rudder pedals, and toe brakes.
+4. **100% Protocol-Compatible MSFS WASM LVAR Bridge Client**: Speaks the binary ClientDataArea protocol implemented by `SPAD-bridge-module.wasm`. Supports LVAR discovery, RPN calculator code execution, HVARs, BVARs, and continuous variable streaming.
+5. **Native Linux Hardware Discovery**: Automatic enumeration of Linux `evdev` devices (`/dev/input/event*`) and direct `hidraw` drivers for Saitek Multi, Radio, Switch, and BIP panels.
 
 ---
 
-## 2. Reverse-Engineering Evidence & Protocol Specification
+## 2. Protocol Specification & WASM Evidence
 
-The protocol was reverse-engineered from:
-- `SPAD.neXt.MSFS-LVAR-Bridge.Setup.exe` (`SPAD-bridge-module.wasm` and `BridgeHelper.dll`)
-- `SPAD.neXt.0.9.24.26.Setup.exe` (`SPAD.neXt.exe`, `SPAD.Interfaces.dll`, `SPAD.neXt.XmlSerializers.dll`, `Saitek.PanelBase.dll`)
+The bridge protocol enables communication with the flight simulator:
 
 ### 2.1 MSFS WASM LVAR Bridge Protocol
 
@@ -87,7 +86,7 @@ When MSFS runs under Steam Proton, Wine's internal Named Pipe system does not br
 
 By adding a `SimConnect.xml` to the Proton wineprefix (`<pfx>/drive_c/users/steamuser/AppData/Roaming/Microsoft Flight Simulator/`), MSFS opens a local IPv4 TCP listener on `127.0.0.1:45454`.
 
-Because both Steam Proton and native Linux share the Linux network namespace (`localhost`), `spad-linx` connects directly to this TCP socket, achieving **zero-overhead, sub-millisecond communication**.
+Because both Steam Proton and native Linux share the Linux network namespace (`localhost`), **AeroDeck** connects directly to this TCP socket, achieving **zero-overhead, sub-millisecond communication**.
 
 ---
 
@@ -105,38 +104,39 @@ Because both Steam Proton and native Linux share the Linux network namespace (`l
 ## 5. Usage & Interactive GUI
 
 ### 5.1 Interactive Graphical Interface (GUI)
-`spad-linx` features a complete, high-performance immediate-mode GUI built with `egui` and `eframe`, designed specifically to provide the intuitive mapping and monitoring experience of SPAD.neXt on Linux and Windows.
+**AeroDeck** features a high-performance immediate-mode GUI built with `egui` and `eframe`.
 
 To launch the GUI:
 ```bash
 # Launch GUI directly (default action)
-./target/release/spad-linx
-# or explicitly
-./target/release/spad-linx gui --profile ./default_c172.xml
+./target/release/aerodeck
+# or explicitly with a profile
+./target/release/aerodeck gui --profile ./default_c172.xml
 ```
 
 #### GUI Capabilities:
 - **Real-Time Hardware Input Monitor**:
-  - Live feedback banner highlights incoming controller signals as soon as you toggle a switch, press a button, or turn an encoder.
-  - **Auto-Select Active Hardware Input**: Flipping a physical switch on your desk immediately focuses that input in the mapping tree.
-- **Intuitive Controller Mapping Editor**:
-  - Browse inputs across Saitek Multi Panel, Radio Panel, Switch Panel, BIP, and Virtual Controllers.
+  - Live feedback banner highlights incoming controller signals as soon as you toggle a switch, press a button, or move an axis.
+  - **Auto-Select Active Hardware Input**: Moving any physical control or axis focuses it immediately.
+- **Analog Axes Telemetry & Calibration**:
+  - Live animated position progress bars showing percentage and raw hardware values.
+  - Direction invert toggle and deadband slider.
+  - Presets for Pitch, Roll, Yaw, Master Throttle, Multi-Engine Throttles, Flaps, Spoilers, and Toe Brakes.
+- **Controller Mapping Editor**:
+  - Browse connected flight hardware and virtual flight panels.
   - Create, test, and delete bindings directly from the UI.
-  - Choose from **50+ Pre-Configured SimConnect Events** (Autopilot, Radios, Lights, Systems, Engines, Flight Controls) or enter custom events.
-  - Bind to **MSFS LVARs** with live discovery dropdowns and write values.
-  - Execute **RPN Calculator Scripts** with pre-built templates.
-  - Attach execution **Conditions** (e.g., `Target == Value`, `<`, `>`).
-  - **"Test Action in Simulator"**: Fire bindings instantly into MSFS to verify them live.
+  - 50+ Pre-Configured SimConnect Events (Autopilot, Radios, Lights, Systems, Engines, Flight Controls).
+  - Bind to MSFS LVARs with live discovery dropdowns.
+  - Execute RPN Calculator Scripts.
 - **MSFS WASM LVAR Explorer**:
   - Live searchable table of all variables discovered in the running aircraft with real-time value updates.
   - Direct variable writing and interactive RPN calculator console.
 - **Interactive Virtual Flight Panel Simulation**:
-  - On-screen visual mockups of the Switch Panel, Multi Panel (with 7-segment digital displays), and Radio Panel.
-  - Click switches and turn dials on screen to test mappings even without hardware plugged in.
+  - On-screen visual mockups of Switch Panel, Multi Panel (with 7-segment digital displays), and Radio Panel.
 - **One-Click Steam Proton Setup**:
   - Automatically locates your MSFS 2020 Steam Proton prefix and configures `SimConnect.xml`.
 - **Live Event Log**:
-  - Real-time scrolling diagnostics of hardware HID reports, SimConnect transactions, and profile executions.
+  - Real-time scrolling diagnostics of hardware events, SimConnect transactions, and profile executions.
 
 ### 5.2 Build
 ```bash
@@ -144,53 +144,46 @@ cargo build --release
 ```
 
 ### 5.3 Auto-Configure Steam Proton (CLI)
-Automatically finds your MSFS Steam Proton prefix and installs the `SimConnect.xml` network bridge:
 ```bash
-./target/release/spad-linx proton setup
+./target/release/aerodeck proton setup
 ```
 
 ### 5.4 Profile Inspection & Generation
-Inspect an existing SPAD.neXt profile:
 ```bash
-./target/release/spad-linx profile inspect --path my_profile.xml
+# Inspect a SPAD.neXt compatible profile
+./target/release/aerodeck profile inspect --path my_profile.xml
+
+# Generate a sample XML profile
+./target/release/aerodeck profile create-sample --output c172.xml
 ```
 
-Generate a sample MSFS profile with Multi & Switch Panel bindings:
+### 5.5 Direct LVAR Bridge Interaction
 ```bash
-./target/release/spad-linx profile create-sample --output c172.xml
+# Discover LVARs
+./target/release/aerodeck bridge list-lvars --simconnect 127.0.0.1:45454
+
+# Execute RPN calculator code
+./target/release/aerodeck bridge exec "(L:A32NX_AUTOPILOT_1_ACTIVE, bool)"
 ```
 
-### 5.4 Direct LVAR Bridge Interaction
-Discover all LVARs in your currently loaded MSFS aircraft:
+### 5.6 Scan Hardware Controllers & Flight Panels
 ```bash
-./target/release/spad-linx bridge list-lvars --simconnect 127.0.0.1:45454
+./target/release/aerodeck devices scan
 ```
 
-Execute arbitrary RPN calculator code directly in the sim:
+### 5.7 Test in Virtual Simulator Mode
 ```bash
-./target/release/spad-linx bridge exec "(L:A32NX_AUTOPILOT_1_ACTIVE, bool)"
+./target/release/aerodeck test-virtual --profile ./default_c172.xml
 ```
 
-### 5.5 Scan Hardware Panels
+### 5.8 Run Profile Daemon
 ```bash
-./target/release/spad-linx devices scan
-```
-
-### 5.6 Test in Virtual Simulator Mode
-Simulate panel inputs and action dispatch without physical hardware:
-```bash
-./target/release/spad-linx test-virtual --profile ./default_c172.xml
-```
-
-### 5.7 Run Profile Daemon
-```bash
-./target/release/spad-linx run --profile ./default_c172.xml --simconnect 127.0.0.1:45454
+./target/release/aerodeck run --profile ./default_c172.xml --simconnect 127.0.0.1:45454
 ```
 
 ---
 
 ## 6. Test Suite
-Run the clean-room automated test suite verifying protocols, binary alignments, and profile evaluation:
 ```bash
 cargo test
 ```

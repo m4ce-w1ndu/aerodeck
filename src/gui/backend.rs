@@ -132,7 +132,7 @@ async fn run_backend_loop(
                         match SimConnectClient::connect(&addr).await {
                             Ok(sc) => {
                                 let sc = Arc::new(sc);
-                                if let Err(e) = sc.open("spad-linx-gui").await {
+                                if let Err(e) = sc.open("aerodeck-gui").await {
                                     let _ = event_tx.send(GuiEvent::SimConnectStatus {
                                         connected: false,
                                         message: format!("Failed to open SimConnect session: {}", e),

@@ -1,4 +1,4 @@
-use spad_linx::hardware::*;
+use aerodeck::hardware::*;
 
 #[test]
 fn test_multi_panel_decoding_and_encoding() {

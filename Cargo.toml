@@ -1,8 +1,8 @@
 [package]
-name = "spad-linx"
+name = "aerodeck"
 version = "0.1.0"
 edition = "2021"
-description = "Clean-room cross-platform SPAD.neXt profile runner and MSFS LVAR Bridge controller for Linux/Steam Proton"
+description = "AeroDeck: High-performance flight simulator hardware engine & controller bridge (SPAD.neXt profile compatible)"
 
 [dependencies]
 tokio = { version = "1.40", features = ["full"] }

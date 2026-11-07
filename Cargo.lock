@@ -25,6 +25,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aerodeck"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "byteorder",
+ "clap",
+ "colored",
+ "eframe",
+ "egui",
+ "evdev",
+ "futures",
+ "hidapi",
+ "quick-xml 0.37.5",
+ "regex",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2489,28 +2511,6 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "spad-linx"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "byteorder",
- "clap",
- "colored",
- "eframe",
- "egui",
- "evdev",
- "futures",
- "hidapi",
- "quick-xml 0.37.5",
- "regex",
- "serde",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

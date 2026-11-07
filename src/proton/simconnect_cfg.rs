@@ -59,7 +59,7 @@ impl ProtonConfigurator {
     <Scope>local</Scope>
   </SimConnect.Comm>
 
-  <!-- IPv4 Network TCP Port (Allows native Linux spad-linx to communicate with zero latency) -->
+  <!-- IPv4 Network TCP Port (Allows native Linux AeroDeck to communicate with zero latency) -->
   <SimConnect.Comm>
     <Disabled>False</Disabled>
     <Protocol>IPv4</Protocol>

@@ -29,7 +29,7 @@ pub fn render_proton_view(
     ui.add_space(4.0);
 
     ui.label("Under Linux Steam Proton, Named Pipes cannot be shared directly with native Linux programs.");
-    ui.label("spad-linx automatically detects your MSFS 2020 Proton prefix and provisions a TCP SimConnect.xml listener, letting native Linux programs communicate with MSFS with zero latency.");
+    ui.label("AeroDeck automatically detects your MSFS 2020 Proton prefix and provisions a TCP SimConnect.xml listener, letting native Linux programs communicate with MSFS with zero latency.");
     ui.add_space(8.0);
 
     let detected_path = ProtonConfigurator::find_msfs_roaming_path(None);

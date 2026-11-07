@@ -1,4 +1,4 @@
-use spad_linx::profile::*;
+use aerodeck::profile::*;
 use std::collections::HashMap;
 
 #[test]

@@ -1,4 +1,4 @@
-use spad_linx::gui::presets::{COMMON_CALCULATOR_CODES, SIMCONNECT_AXIS_PRESETS, SIMCONNECT_PRESETS, STANDARD_DEVICES};
+use aerodeck::gui::presets::{COMMON_CALCULATOR_CODES, SIMCONNECT_AXIS_PRESETS, SIMCONNECT_PRESETS, STANDARD_DEVICES};
 
 #[test]
 fn test_presets_coverage() {
@@ -44,7 +44,7 @@ fn test_standard_devices_inputs() {
 
 #[test]
 fn test_hardware_device_enumeration() {
-    use spad_linx::hardware::enumerator::DeviceEnumerator;
+    use aerodeck::hardware::enumerator::DeviceEnumerator;
     let devices = DeviceEnumerator::enumerate_all();
     assert!(!devices.is_empty(), "Should enumerate at least the virtual device");
 

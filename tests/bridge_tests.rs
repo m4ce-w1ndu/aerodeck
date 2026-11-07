@@ -1,4 +1,4 @@
-use spad_linx::bridge::*;
+use aerodeck::bridge::*;
 
 #[test]
 fn test_host_request_binary_layout() {

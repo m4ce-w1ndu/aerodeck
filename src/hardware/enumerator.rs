@@ -119,23 +119,48 @@ impl DeviceEnumerator {
                 }
             }
 
+            let mut hat_indices = Vec::new();
+
             if let Some(abs_axes) = has_abs {
                 for axis in abs_axes.iter() {
                     let axis_name = format_axis_name(axis);
                     if axis_name != "ABS_VOLUME" {
-                        axes.push(axis_name.clone());
-                        if axis_name.starts_with("ABS_X")
-                            || axis_name.starts_with("ABS_Y")
-                            || axis_name.starts_with("ABS_Z")
-                            || axis_name.starts_with("ABS_R")
-                            || axis_name.starts_with("ABS_THROTTLE")
-                            || axis_name.starts_with("ABS_RUDDER")
-                            || axis_name.starts_with("ABS_HAT")
-                        {
+                        if axis_name.starts_with("ABS_HAT") {
                             is_controller = true;
+                            // Extract hat index, e.g. ABS_HAT0X -> 0, ABS_HAT1Y -> 1
+                            if let Some(suffix) = axis_name.strip_prefix("ABS_HAT") {
+                                if let Some(first_char) = suffix.chars().next() {
+                                    if let Some(digit) = first_char.to_digit(10) {
+                                        let idx = digit as usize;
+                                        if !hat_indices.contains(&idx) {
+                                            hat_indices.push(idx);
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            axes.push(axis_name.clone());
+                            if axis_name.starts_with("ABS_X")
+                                || axis_name.starts_with("ABS_Y")
+                                || axis_name.starts_with("ABS_Z")
+                                || axis_name.starts_with("ABS_R")
+                                || axis_name.starts_with("ABS_THROTTLE")
+                                || axis_name.starts_with("ABS_RUDDER")
+                            {
+                                is_controller = true;
+                            }
                         }
                     }
                 }
+            }
+
+            // Append discrete POV hat directions to buttons list
+            hat_indices.sort_unstable();
+            for h in &hat_indices {
+                buttons.push(format!("HAT{}_UP", h));
+                buttons.push(format!("HAT{}_RIGHT", h));
+                buttons.push(format!("HAT{}_DOWN", h));
+                buttons.push(format!("HAT{}_LEFT", h));
             }
 
             if !is_controller {
@@ -321,6 +346,8 @@ impl DeviceEnumerator {
                         }
                     }
 
+                    let mut hat_state: HashMap<(u32, bool), i32> = HashMap::new();
+
                     info!("Started real-time event listener on hardware controller '{}' ({:?})", dev_name, path_clone);
 
                     while !stop.load(Ordering::Relaxed) {
@@ -353,23 +380,50 @@ impl DeviceEnumerator {
                                             });
                                         }
                                         evdev::EventSummary::AbsoluteAxis(_, axis_code, val) => {
-                                            // Handle POV / Hat Switches
+                                            // Handle POV / Hat Switches (discrete 4-way/8-way directional buttons)
                                             let axis_name = format_axis_name(axis_code);
-                                            if axis_name == "ABS_HAT0Y" {
-                                                if val == -1 {
-                                                    send_hat_event(&etx, &dev_name, "HAT0_UP", "PRESS");
-                                                } else if val == 1 {
-                                                    send_hat_event(&etx, &dev_name, "HAT0_DOWN", "PRESS");
-                                                } else if val == 0 {
-                                                    send_hat_event(&etx, &dev_name, "HAT0_Y", "CENTER");
-                                                }
-                                            } else if axis_name == "ABS_HAT0X" {
-                                                if val == 1 {
-                                                    send_hat_event(&etx, &dev_name, "HAT0_RIGHT", "PRESS");
-                                                } else if val == -1 {
-                                                    send_hat_event(&etx, &dev_name, "HAT0_LEFT", "PRESS");
-                                                } else if val == 0 {
-                                                    send_hat_event(&etx, &dev_name, "HAT0_X", "CENTER");
+                                            if axis_name.starts_with("ABS_HAT") {
+                                                let is_y = axis_name.ends_with('Y');
+                                                let is_x = axis_name.ends_with('X');
+                                                let hat_idx = axis_name.strip_prefix("ABS_HAT")
+                                                    .and_then(|s| s.chars().next())
+                                                    .and_then(|c| c.to_digit(10))
+                                                    .unwrap_or(0);
+
+                                                if is_y {
+                                                    let up_name = format!("HAT{}_UP", hat_idx);
+                                                    let down_name = format!("HAT{}_DOWN", hat_idx);
+                                                    let prev_y = hat_state.get(&(hat_idx, true)).copied().unwrap_or(0);
+                                                    hat_state.insert((hat_idx, true), val);
+
+                                                    if val == -1 {
+                                                        send_hat_event(&etx, &dev_name, &up_name, "PRESS");
+                                                    } else if val == 1 {
+                                                        send_hat_event(&etx, &dev_name, &down_name, "PRESS");
+                                                    } else if val == 0 {
+                                                        if prev_y == -1 {
+                                                            send_hat_event(&etx, &dev_name, &up_name, "RELEASE");
+                                                        } else if prev_y == 1 {
+                                                            send_hat_event(&etx, &dev_name, &down_name, "RELEASE");
+                                                        }
+                                                    }
+                                                } else if is_x {
+                                                    let right_name = format!("HAT{}_RIGHT", hat_idx);
+                                                    let left_name = format!("HAT{}_LEFT", hat_idx);
+                                                    let prev_x = hat_state.get(&(hat_idx, false)).copied().unwrap_or(0);
+                                                    hat_state.insert((hat_idx, false), val);
+
+                                                    if val == 1 {
+                                                        send_hat_event(&etx, &dev_name, &right_name, "PRESS");
+                                                    } else if val == -1 {
+                                                        send_hat_event(&etx, &dev_name, &left_name, "PRESS");
+                                                    } else if val == 0 {
+                                                        if prev_x == 1 {
+                                                            send_hat_event(&etx, &dev_name, &right_name, "RELEASE");
+                                                        } else if prev_x == -1 {
+                                                            send_hat_event(&etx, &dev_name, &left_name, "RELEASE");
+                                                        }
+                                                    }
                                                 }
                                             } else {
                                                 // Analog flight axis (ABS_X, ABS_Y, ABS_Z, ABS_RX, ABS_RY, ABS_RZ, ABS_THROTTLE, etc.)
@@ -433,6 +487,11 @@ fn send_hat_event(etx: &mpsc::UnboundedSender<GuiEvent>, dev_name: &str, bound_t
         bound_to: bound_to.to_string(),
         action: action.to_string(),
         time: Instant::now(),
+    });
+    let _ = etx.send(GuiEvent::Log {
+        timestamp: chrono_now_str(),
+        level: "INPUT".to_string(),
+        text: format!("[{}] Hardware Event: {} -> {}", dev_name, bound_to, action),
     });
 }
 

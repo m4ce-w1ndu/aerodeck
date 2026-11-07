@@ -29,3 +29,16 @@ fn test_standard_devices_inputs() {
     let radio = STANDARD_DEVICES.iter().find(|d| d.id == "radio_panel").unwrap();
     assert!(radio.inputs.contains(&"RADIO_ACT_STBY"));
 }
+
+#[test]
+fn test_hardware_device_enumeration() {
+    use spad_linx::hardware::enumerator::DeviceEnumerator;
+    let devices = DeviceEnumerator::enumerate_all();
+    assert!(!devices.is_empty(), "Should enumerate at least the virtual device");
+
+    for dev in &devices {
+        assert!(!dev.name.is_empty());
+        assert!(!dev.id.is_empty());
+        assert!(!dev.inputs.is_empty(), "Device {} has no inputs", dev.name);
+    }
+}

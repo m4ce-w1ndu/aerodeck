@@ -4,6 +4,7 @@ pub mod multi_panel;
 pub mod switch_panel;
 pub mod bip;
 pub mod virtual_panel;
+pub mod enumerator;
 
 pub use device::*;
 pub use radio_panel::RadioPanel;
@@ -11,6 +12,7 @@ pub use multi_panel::MultiPanel;
 pub use switch_panel::SwitchPanel;
 pub use bip::BipPanel;
 pub use virtual_panel::VirtualPanelHost;
+pub use enumerator::*;
 
 #[cfg(feature = "hardware")]
 pub struct UsbPanelScanner;

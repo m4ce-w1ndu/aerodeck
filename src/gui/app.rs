@@ -83,12 +83,19 @@ impl SpadLinxApp {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "default_c172.xml".to_string());
 
+        let proton_state = ProtonViewState::default();
+        let initial_port = if port == 45454 && proton_state.port != 45454 {
+            proton_state.port
+        } else {
+            port
+        };
+
         let mut app = Self {
             cmd_tx,
             event_rx,
             active_tab: ActiveTab::Mapping,
             simconnect_host: host.clone(),
-            simconnect_port: port,
+            simconnect_port: initial_port,
             simconnect_connected: false,
             simconnect_msg: "Not connected".to_string(),
             bridge_active: false,
@@ -107,7 +114,7 @@ impl SpadLinxApp {
             mapping_state: MappingViewState::default(),
             lvar_state: LvarViewState::default(),
             virtual_state: VirtualPanelViewState::default(),
-            proton_state: ProtonViewState::default(),
+            proton_state,
         };
 
         // Try loading initial profile if file exists
@@ -244,7 +251,12 @@ impl eframe::App for SpadLinxApp {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let proton_color = if crate::proton::ProtonConfigurator::find_msfs_roaming_path(None).is_some() {
+                    let custom_pfx = if self.proton_state.custom_prefix.trim().is_empty() {
+                        None
+                    } else {
+                        Some(PathBuf::from(self.proton_state.custom_prefix.trim()))
+                    };
+                    let proton_color = if crate::proton::ProtonConfigurator::find_msfs_roaming_path(custom_pfx).is_some() {
                         Color32::from_rgb(0, 255, 120)
                     } else {
                         Color32::GRAY
@@ -291,6 +303,7 @@ impl eframe::App for SpadLinxApp {
                     render_proton_view(
                         ui,
                         &mut self.proton_state,
+                        &mut self.simconnect_port,
                         &self.cmd_tx,
                     );
                 }

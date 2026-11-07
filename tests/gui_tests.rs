@@ -60,3 +60,28 @@ fn test_hardware_device_enumeration() {
     assert!(virt.axis_ranges.contains_key("SIM_THROTTLE_1"));
     assert_eq!(virt.axis_ranges.get("SIM_THROTTLE_1"), Some(&(0, 16383)));
 }
+
+#[test]
+fn test_proton_library_and_simconnect_xml() {
+    use aerodeck::proton::ProtonConfigurator;
+
+    let xml = ProtonConfigurator::generate_simconnect_xml_with_scope(2048, "local");
+    assert!(xml.contains("<Port>2048</Port>"));
+    assert!(xml.contains("<Port>500</Port>"));
+    assert!(xml.contains("Custom\\SimConnect"));
+    assert!(xml.contains("<Address>127.0.0.1</Address>"));
+
+    let cfg = ProtonConfigurator::generate_simconnect_cfg("127.0.0.1", 2048);
+    assert!(cfg.contains("Port=2048"));
+    assert!(cfg.contains("Protocol=IPv4"));
+
+    // Verify libraryfolders.vdf discovery if Steam is installed on this host
+    let libs = ProtonConfigurator::discover_steam_libraries();
+    if !libs.is_empty() {
+        if let Some(roaming) = ProtonConfigurator::find_msfs_roaming_path(None) {
+            assert!(roaming.exists());
+            let ports = ProtonConfigurator::read_configured_ipv4_ports(&roaming);
+            assert!(!ports.is_empty(), "Should parse IPv4 port from existing SimConnect.xml");
+        }
+    }
+}

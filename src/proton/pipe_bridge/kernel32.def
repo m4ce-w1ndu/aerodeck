@@ -1,0 +1,18 @@
+LIBRARY kernel32.dll
+EXPORTS
+CreateEventA
+CreateFileA
+CreateNamedPipeA
+ConnectNamedPipe
+CreateThread
+CloseHandle
+ExitProcess
+GetCommandLineA
+GetLastError
+GetOverlappedResult
+ReadFile
+ResetEvent
+Sleep
+WaitForSingleObject
+WriteFile
+GetStdHandle

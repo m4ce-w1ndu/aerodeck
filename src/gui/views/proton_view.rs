@@ -13,6 +13,9 @@ pub struct ProtonViewState {
 
 impl Default for ProtonViewState {
     fn default() -> Self {
+        // Perform unattended setup automatically so the user never needs manual configuration
+        let _ = ProtonConfigurator::ensure_unattended_setup(None);
+
         let initial_prefix = ProtonConfigurator::find_msfs_proton_prefix()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
@@ -258,7 +261,47 @@ pub fn render_proton_view(
 
     ui.add_space(8.0);
 
-    // 3. Collapsible Reference Snippets & Discovered Steam Libraries
+    // 3. Unattended Hybrid Engine & Wine Named-Pipe Bridge Helper Status
+    ui.group(|ui| {
+        ui.label(RichText::new("3. Unattended Connection Engine & Wine Named-Pipe Bridge Helper:").strong());
+        ui.label(
+            RichText::new(
+                "AeroDeck operates 100% unattended using a 3-tier connection resolver:\n\
+                • Tier 1 (Auto-Provisioned TCP): Automatically provisions unprivileged port 45454 in SimConnect.xml on startup.\n\
+                • Tier 2 (Live Dynamic /proc Scanner): Inspects FlightSimulator.exe sockets in /proc/<pid>/fd + /proc/net/tcp to catch MSFS's default Dynamic IPv4 (<Port>0</Port>) listener even before a restart.\n\
+                • Tier 3 (Wine Named-Pipe Relay): Deploys aerodeck-pipe-bridge.exe (7.5 KB Win64 helper) inside your Proton prefix to bridge \\\\.\\pipe\\Custom\\SimConnect to TCP 45454 if IPv4 is disabled.",
+            )
+            .small()
+            .color(Color32::LIGHT_GRAY),
+        );
+
+        if let Some(ref roaming) = active_roaming_path {
+            let helper_path = roaming.join("aerodeck-pipe-bridge.exe");
+            let wine_bin = ProtonConfigurator::find_proton_wine_binary(roaming);
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                if helper_path.exists() {
+                    ui.label(RichText::new("✔ Win64 Pipe Bridge Staged:").color(Color32::from_rgb(0, 255, 120)).small());
+                    ui.label(RichText::new("aerodeck-pipe-bridge.exe (7.5 KB)").monospace().small());
+                }
+                if let Some(ref wb) = wine_bin {
+                    ui.separator();
+                    ui.label(RichText::new("✔ Proton Wine Runtime:").color(Color32::from_rgb(0, 230, 255)).small());
+                    ui.label(RichText::new(wb.to_string_lossy()).monospace().small());
+                }
+                if ui.small_button("🧪 Self-Test Wine Named-Pipe Bridge").clicked() {
+                    match ProtonConfigurator::run_pipe_bridge_self_test(custom_opt.clone()) {
+                        Ok(msg) => state.status_message = Some(format!("Success! {}", msg)),
+                        Err(e) => state.status_message = Some(format!("Error: {}", e)),
+                    }
+                }
+            });
+        }
+    });
+
+    ui.add_space(8.0);
+
+    // 4. Collapsible Reference Snippets & Discovered Steam Libraries
     let discovered_libs = ProtonConfigurator::discover_steam_libraries();
     if !discovered_libs.is_empty() {
         ui.collapsing("Discovered Steam Libraries (from libraryfolders.vdf)", |ui| {

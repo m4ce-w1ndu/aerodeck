@@ -75,13 +75,30 @@ fn test_proton_library_and_simconnect_xml() {
     assert!(cfg.contains("Port=2048"));
     assert!(cfg.contains("Protocol=IPv4"));
 
-    // Verify libraryfolders.vdf discovery if Steam is installed on this host
+    // Verify libraryfolders.vdf discovery, unattended setup, and Wine Named-Pipe Bridge self-test if Steam is installed
     let libs = ProtonConfigurator::discover_steam_libraries();
     if !libs.is_empty() {
         if let Some(roaming) = ProtonConfigurator::find_msfs_roaming_path(None) {
             assert!(roaming.exists());
+
+            // Run unattended setup (auto-provisions SimConnect.xml on unprivileged port 45454 + stages aerodeck-pipe-bridge.exe)
+            let report = ProtonConfigurator::ensure_unattended_setup(None)
+                .expect("Unattended Proton setup should succeed");
+            assert!(report.active_port >= 1024);
+            assert!(report.helper_deployed_path.exists());
+
             let ports = ProtonConfigurator::read_configured_ipv4_ports(&roaming);
-            assert!(!ports.is_empty(), "Should parse IPv4 port from existing SimConnect.xml");
+            assert!(
+                ports.iter().any(|(_, p)| *p == 45454 || *p >= 1024),
+                "SimConnect.xml should contain an unprivileged IPv4 port after unattended setup"
+            );
+
+            // Verify Wine Named-Pipe Bridge self-test runs inside the Proton prefix
+            if report.proton_wine_bin.is_some() {
+                let test_res = ProtonConfigurator::run_pipe_bridge_self_test(None)
+                    .expect("Wine Named-Pipe Bridge self-test should pass");
+                assert!(test_res.contains("SELF_TEST_OK"));
+            }
         }
     }
 }

@@ -1,0 +1,16 @@
+LIBRARY ws2_32.dll
+EXPORTS
+WSAStartup
+WSACleanup
+socket
+bind
+listen
+accept
+connect
+recv
+send
+closesocket
+setsockopt
+htons
+htonl
+inet_addr

@@ -1,11 +1,28 @@
 use anyhow::{Context, Result};
 use std::fs;
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use tracing::info;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+use tracing::{info, warn};
 
 pub const MSFS_2020_STEAM_APP_ID: &str = "1250410";
 pub const MSFS_2024_STEAM_APP_ID: &str = "2537590";
 pub const DEFAULT_SIMCONNECT_PORT: u16 = 45454;
+
+/// Embedded 7.5 KB freestanding Win64 Named-Pipe-to-TCP bridge helper (`aerodeck-pipe-bridge.exe`)
+pub const PIPE_BRIDGE_EXE: &[u8] = include_bytes!("pipe_bridge/aerodeck-pipe-bridge.exe");
+
+#[derive(Debug, Clone)]
+pub struct UnattendedSetupReport {
+    pub prefix_path: PathBuf,
+    pub roaming_path: PathBuf,
+    pub active_port: u16,
+    pub xml_auto_provisioned: bool,
+    pub helper_deployed_path: PathBuf,
+    pub proton_wine_bin: Option<PathBuf>,
+    pub strategy_summary: String,
+}
 
 pub struct ProtonConfigurator;
 
@@ -84,6 +101,70 @@ impl ProtonConfigurator {
                     return Some(candidate2);
                 }
             }
+        }
+
+        None
+    }
+
+    /// Resolves the root `pfx` path from a user-supplied prefix or roaming path
+    pub fn resolve_pfx_root(input: &Path) -> Option<PathBuf> {
+        if input.join("drive_c").exists() {
+            return Some(input.to_path_buf());
+        }
+        if input.join("pfx").join("drive_c").exists() {
+            return Some(input.join("pfx"));
+        }
+        let mut cur = Some(input);
+        while let Some(p) = cur {
+            if p.file_name().and_then(|n| n.to_str()) == Some("pfx") && p.join("drive_c").exists() {
+                return Some(p.to_path_buf());
+            }
+            cur = p.parent();
+        }
+        None
+    }
+
+    /// Finds the exact Proton `wine` binary matching the MSFS compatdata prefix via `config_info`
+    pub fn find_proton_wine_binary(pfx_or_compatdata: &Path) -> Option<PathBuf> {
+        let pfx = Self::resolve_pfx_root(pfx_or_compatdata).unwrap_or_else(|| pfx_or_compatdata.to_path_buf());
+        // Check ../config_info inside compatdata/<appid>/config_info
+        if let Some(compatdata_dir) = pfx.parent() {
+            let config_info = compatdata_dir.join("config_info");
+            if let Ok(content) = fs::read_to_string(&config_info) {
+                for line in content.lines() {
+                    if let Some(idx) = line.find("/files/") {
+                        let proton_root = PathBuf::from(&line[..idx]);
+                        let wine_bin = proton_root.join("files").join("bin").join("wine");
+                        if wine_bin.exists() {
+                            return Some(wine_bin);
+                        }
+                        let wine64_bin = proton_root.join("files").join("bin").join("wine64");
+                        if wine64_bin.exists() {
+                            return Some(wine64_bin);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: check discovered Steam libraries for Proton - Experimental
+        for lib in Self::discover_steam_libraries() {
+            let exp_wine = lib
+                .join("steamapps")
+                .join("common")
+                .join("Proton - Experimental")
+                .join("files")
+                .join("bin")
+                .join("wine");
+            if exp_wine.exists() {
+                return Some(exp_wine);
+            }
+        }
+
+        // System wine fallback
+        let sys_wine = PathBuf::from("/usr/bin/wine");
+        if sys_wine.exists() {
+            return Some(sys_wine);
         }
 
         None
@@ -188,6 +269,302 @@ impl ProtonConfigurator {
             }
         }
         0
+    }
+
+    /// Scans `/proc` for a running `FlightSimulator.exe` process and returns all TCP IPv4 ports it is listening on.
+    /// Even with an unmodified default `SimConnect.xml`, MSFS includes `<Descr>Dynamic IP4 port</Descr> <Port>0</Port>`,
+    /// which binds an ephemeral unprivileged port in the Linux kernel.
+    pub fn discover_live_msfs_tcp_ports() -> Vec<u16> {
+        let mut socket_inodes = Vec::new();
+        if let Ok(proc_entries) = fs::read_dir("/proc") {
+            for entry in proc_entries.flatten() {
+                let file_name = entry.file_name();
+                let pid_str = match file_name.to_str() {
+                    Some(s) if s.chars().all(|c| c.is_ascii_digit()) => s,
+                    _ => continue,
+                };
+                let pid_path = entry.path();
+                let is_msfs = fs::read_to_string(pid_path.join("comm"))
+                    .map(|c| c.to_lowercase().contains("flightsimulator"))
+                    .unwrap_or(false)
+                    || fs::read_to_string(pid_path.join("cmdline"))
+                        .map(|c| c.to_lowercase().contains("flightsimulator.exe"))
+                        .unwrap_or(false);
+
+                if is_msfs {
+                    if let Ok(fds) = fs::read_dir(pid_path.join("fd")) {
+                        for fd in fds.flatten() {
+                            if let Ok(target) = fs::read_link(fd.path()) {
+                                if let Some(target_str) = target.to_str() {
+                                    if let Some(inode) = target_str
+                                        .strip_prefix("socket:[")
+                                        .and_then(|s| s.strip_suffix(']'))
+                                    {
+                                        socket_inodes.push((pid_str.to_string(), inode.to_string()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if socket_inodes.is_empty() {
+            return Vec::new();
+        }
+
+        let mut ports = Vec::new();
+        if let Ok(tcp_table) = fs::read_to_string("/proc/net/tcp") {
+            for line in tcp_table.lines().skip(1) {
+                let cols: Vec<&str> = line.split_whitespace().collect();
+                if cols.len() < 10 {
+                    continue;
+                }
+                // State 0A == TCP_LISTEN
+                if cols[3] != "0A" {
+                    continue;
+                }
+                let inode = cols[9];
+                if socket_inodes.iter().any(|(_, i)| i == inode) {
+                    if let Some(port_hex) = cols[1].split(':').nth(1) {
+                        if let Ok(port) = u16::from_str_radix(port_hex, 16) {
+                            if port > 0 && !ports.contains(&port) {
+                                ports.push(port);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        ports
+    }
+
+    /// Reads `SimConnect_Port_IPv4` from the Proton prefix's `user.reg` if MSFS wrote a dynamic IPv4 port
+    pub fn read_registry_dynamic_ipv4_port(pfx_path: &Path) -> Option<u16> {
+        let pfx = Self::resolve_pfx_root(pfx_path)?;
+        let user_reg = pfx.join("user.reg");
+        let content = fs::read_to_string(user_reg).ok()?;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("\"SimConnect_Port_IPv4\"") {
+                if let Some(val_part) = trimmed.split('=').nth(1) {
+                    let clean = val_part.trim().trim_matches('"');
+                    if let Some(hex) = clean.strip_prefix("dword:") {
+                        if let Ok(p) = u16::from_str_radix(hex, 16) {
+                            if p > 0 {
+                                return Some(p);
+                            }
+                        }
+                    } else if let Ok(p) = clean.parse::<u16>() {
+                        if p > 0 {
+                            return Some(p);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Deploys the embedded 7.5 KB Win64 `aerodeck-pipe-bridge.exe` helper into the MSFS Roaming directory
+    pub fn deploy_pipe_bridge_helper(roaming_dir: &Path) -> Result<PathBuf> {
+        let exe_path = roaming_dir.join("aerodeck-pipe-bridge.exe");
+        let needs_write = match fs::metadata(&exe_path) {
+            Ok(meta) => meta.len() != PIPE_BRIDGE_EXE.len() as u64,
+            Err(_) => true,
+        };
+        if needs_write {
+            fs::write(&exe_path, PIPE_BRIDGE_EXE)
+                .with_context(|| format!("Failed to write {:?}", exe_path))?;
+        }
+        Ok(exe_path)
+    }
+
+    /// Runs `aerodeck-pipe-bridge.exe --self-test` inside the Proton prefix to verify Wine Named Pipe -> TCP bridging
+    pub fn run_pipe_bridge_self_test(custom_prefix: Option<PathBuf>) -> Result<String> {
+        let roaming = Self::find_msfs_roaming_path(custom_prefix.clone())
+            .ok_or_else(|| anyhow::anyhow!("MSFS Roaming directory not found"))?;
+        let pfx = Self::resolve_pfx_root(&roaming)
+            .or(custom_prefix)
+            .ok_or_else(|| anyhow::anyhow!("Proton pfx root not found"))?;
+        let wine_bin = Self::find_proton_wine_binary(&pfx)
+            .ok_or_else(|| anyhow::anyhow!("Proton wine binary not found"))?;
+        let helper_exe = Self::deploy_pipe_bridge_helper(&roaming)?;
+
+        let output = Command::new(&wine_bin)
+            .env("WINEPREFIX", &pfx)
+            .env("WINEDEBUG", "-all")
+            .arg(&helper_exe)
+            .arg("--self-test")
+            .output()
+            .with_context(|| format!("Failed to execute {:?} under {:?}", helper_exe, wine_bin))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if output.status.success() && stdout.contains("SELF_TEST_OK") {
+            Ok(format!(
+                "Wine Named-Pipe Bridge self-test passed via {:?} ({})",
+                wine_bin.file_name().unwrap_or_default(),
+                stdout
+            ))
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Bridge self-test failed: stdout={} stderr={}", stdout, stderr)
+        }
+    }
+
+    /// Probes for live MSFS Named Pipes (`\\.\pipe\Custom\SimConnect`) inside the Proton prefix
+    /// and spawns the background `aerodeck-pipe-bridge.exe` helper on `target_port` if found.
+    pub fn probe_and_spawn_pipe_bridge(pfx: &Path, roaming: &Path, target_port: u16) -> Result<bool> {
+        let wine_bin = match Self::find_proton_wine_binary(pfx) {
+            Some(b) => b,
+            None => return Ok(false),
+        };
+        let helper_exe = Self::deploy_pipe_bridge_helper(roaming)?;
+
+        let probe = Command::new(&wine_bin)
+            .env("WINEPREFIX", pfx)
+            .env("WINEDEBUG", "-all")
+            .arg(&helper_exe)
+            .arg("--probe")
+            .output()?;
+
+        let stdout = String::from_utf8_lossy(&probe.stdout);
+        if probe.status.success() && stdout.contains("PIPE_FOUND:") {
+            info!(
+                "Detected active MSFS Named Pipe in Proton ({}), spawning aerodeck-pipe-bridge.exe on port {}",
+                stdout.trim(),
+                target_port
+            );
+            Command::new(&wine_bin)
+                .env("WINEPREFIX", pfx)
+                .env("WINEDEBUG", "-all")
+                .arg(&helper_exe)
+                .arg("--port")
+                .arg(target_port.to_string())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?;
+            std::thread::sleep(Duration::from_millis(150));
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    /// Performs 100% UNATTENDED setup on startup:
+    /// 1. Discovers MSFS Proton prefix across all Steam libraries (`libraryfolders.vdf`).
+    /// 2. Checks `SimConnect.xml`; if only privileged port `< 1024` (`500`) is configured, automatically
+    ///    provisions unprivileged static IPv4 port `45454` while preserving all standard MSFS pipes & dynamic ports.
+    /// 3. Deploys the embedded Win64 `aerodeck-pipe-bridge.exe` helper into the prefix.
+    pub fn ensure_unattended_setup(custom_prefix: Option<PathBuf>) -> Result<UnattendedSetupReport> {
+        let roaming = Self::find_msfs_roaming_path(custom_prefix.clone())
+            .ok_or_else(|| anyhow::anyhow!("MSFS Proton prefix not found"))?;
+        let pfx = Self::resolve_pfx_root(&roaming)
+            .or_else(|| custom_prefix.clone())
+            .unwrap_or_else(|| roaming.clone());
+
+        let min_unpriv = Self::get_linux_unprivileged_port_start();
+        let configured_ports = Self::read_configured_ipv4_ports(&roaming);
+
+        // Find if an unprivileged static IPv4 port (>= min_unpriv) already exists in SimConnect.xml
+        let existing_unpriv_port = configured_ports
+            .iter()
+            .map(|(_, port)| *port)
+            .find(|&p| p >= min_unpriv.max(1024));
+
+        let (active_port, xml_auto_provisioned) = if let Some(port) = existing_unpriv_port {
+            (port, false)
+        } else {
+            // Automatically provision DEFAULT_SIMCONNECT_PORT (45454) so MSFS binds an unprivileged TCP port unattended!
+            Self::install_simconnect_xml_with_scope(&roaming, DEFAULT_SIMCONNECT_PORT, "local")?;
+            (DEFAULT_SIMCONNECT_PORT, true)
+        };
+
+        let helper_deployed_path = Self::deploy_pipe_bridge_helper(&roaming)?;
+        let proton_wine_bin = Self::find_proton_wine_binary(&pfx);
+
+        let strategy_summary = if xml_auto_provisioned {
+            format!(
+                "Unattended setup complete: Auto-provisioned SimConnect.xml on unprivileged TCP port {} (replacing privileged port 500 block) + deployed Win64 Named-Pipe bridge helper",
+                active_port
+            )
+        } else {
+            format!(
+                "Unattended setup verified: SimConnect.xml ready on unprivileged TCP port {} + Win64 Named-Pipe bridge helper staged",
+                active_port
+            )
+        };
+
+        Ok(UnattendedSetupReport {
+            prefix_path: pfx,
+            roaming_path: roaming,
+            active_port,
+            xml_auto_provisioned,
+            helper_deployed_path,
+            proton_wine_bin,
+            strategy_summary,
+        })
+    }
+
+    /// Resolves the best active SimConnect TCP port completely unattended:
+    /// 1. Live `FlightSimulator.exe` TCP listeners from `/proc/<pid>/fd` + `/proc/net/tcp` (catches `<Port>0</Port>` dynamic ports!)
+    /// 2. `SimConnect_Port_IPv4` in `user.reg`
+    /// 3. Unprivileged static ports in `SimConnect.xml` (e.g. `45454`, `2048`)
+    /// 4. Automatic fallback to `aerodeck-pipe-bridge.exe` Named Pipe relay if MSFS is running in Pipe-only mode.
+    pub fn resolve_best_simconnect_port(
+        custom_prefix: Option<PathBuf>,
+        preferred_port: u16,
+    ) -> u16 {
+        let mut candidates = Vec::new();
+
+        // 1. Live MSFS TCP sockets from /proc
+        for port in Self::discover_live_msfs_tcp_ports() {
+            if !candidates.contains(&port) {
+                candidates.push(port);
+            }
+        }
+
+        if let Some(roaming) = Self::find_msfs_roaming_path(custom_prefix.clone()) {
+            let pfx = Self::resolve_pfx_root(&roaming).unwrap_or_else(|| roaming.clone());
+
+            // 2. Dynamic port from Wine registry
+            if let Some(reg_port) = Self::read_registry_dynamic_ipv4_port(&pfx) {
+                if !candidates.contains(&reg_port) {
+                    candidates.push(reg_port);
+                }
+            }
+
+            // 3. Static ports from SimConnect.xml
+            for (_, xml_port) in Self::read_configured_ipv4_ports(&roaming) {
+                if !candidates.contains(&xml_port) {
+                    candidates.push(xml_port);
+                }
+            }
+
+            if !candidates.contains(&preferred_port) {
+                candidates.push(preferred_port);
+            }
+
+            // Probe TCP reachability on all candidates
+            for &port in &candidates {
+                let addr = SocketAddr::from(([127, 0, 0, 1], port));
+                if TcpStream::connect_timeout(&addr, Duration::from_millis(80)).is_ok() {
+                    return port;
+                }
+            }
+
+            // 4. Fallback: If no TCP port is reachable, check if MSFS Named Pipe is active in Proton and spawn bridge!
+            if let Ok(true) = Self::probe_and_spawn_pipe_bridge(&pfx, &roaming, preferred_port) {
+                return preferred_port;
+            }
+        } else {
+            warn!("Could not locate MSFS Roaming directory during port resolution");
+        }
+
+        preferred_port
     }
 
     /// Generates a complete MSFS-compatible SimConnect.xml preserving standard Pipes, IPv6, and Dynamic ports

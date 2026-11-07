@@ -90,6 +90,26 @@ async fn run_backend_loop(
     let mut bridge: Option<Arc<SpadLvarBridge>> = None;
     let mut active_profile: Option<Arc<Mutex<SpadProfile>>> = None;
     let mut executor: Option<Arc<ProfileExecutor>> = None;
+    let mut user_disconnected = false;
+    let mut tick_counter: u64 = 0;
+
+    // 1. Unattended Proton & SimConnect Setup on Startup
+    match crate::proton::ProtonConfigurator::ensure_unattended_setup(None) {
+        Ok(report) => {
+            let _ = event_tx.send(GuiEvent::Log {
+                timestamp: chrono_now(),
+                level: "INFO".to_string(),
+                text: format!("[UNATTENDED] {}", report.strategy_summary),
+            });
+        }
+        Err(e) => {
+            let _ = event_tx.send(GuiEvent::Log {
+                timestamp: chrono_now(),
+                level: "WARN".to_string(),
+                text: format!("[UNATTENDED] Proton prefix auto-setup skipped: {}", e),
+            });
+        }
+    }
 
     // Load initial profile if given
     if let Some(ref p) = active_profile_path {
@@ -123,11 +143,17 @@ async fn run_backend_loop(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(GuiCommand::ConnectSimConnect { host, port }) => {
-                        let addr = format!("{}:{}", host, port);
+                        user_disconnected = false;
+                        let resolved_port = if host == "127.0.0.1" || host.eq_ignore_ascii_case("localhost") {
+                            crate::proton::ProtonConfigurator::resolve_best_simconnect_port(None, port)
+                        } else {
+                            port
+                        };
+                        let addr = format!("{}:{}", host, resolved_port);
                         let _ = event_tx.send(GuiEvent::Log {
                             timestamp: chrono_now(),
                             level: "INFO".to_string(),
-                            text: format!("Connecting to SimConnect at {}...", addr),
+                            text: format!("Connecting to SimConnect at {} (resolved unattended)...", addr),
                         });
                         match SimConnectClient::connect(&addr).await {
                             Ok(sc) => {
@@ -186,6 +212,7 @@ async fn run_backend_loop(
                         }
                     }
                     Some(GuiCommand::DisconnectSimConnect) => {
+                        user_disconnected = true;
                         simconnect = None;
                         bridge = None;
                         executor = None;
@@ -347,6 +374,44 @@ async fn run_backend_loop(
                 }
             }
             _ = sleep(Duration::from_millis(500)) => {
+                tick_counter = tick_counter.wrapping_add(1);
+
+                // Unattended background auto-connect when FlightSimulator.exe is detected
+                if simconnect.is_none() && !user_disconnected && tick_counter % 6 == 0 {
+                    let live_ports = crate::proton::ProtonConfigurator::discover_live_msfs_tcp_ports();
+                    if let Some(&port) = live_ports.first() {
+                        let addr = format!("127.0.0.1:{}", port);
+                        if let Ok(sc) = SimConnectClient::connect(&addr).await {
+                            let sc = Arc::new(sc);
+                            if sc.open("aerodeck-gui").await.is_ok() {
+                                simconnect = Some(sc.clone());
+                                let _ = event_tx.send(GuiEvent::SimConnectStatus {
+                                    connected: true,
+                                    message: format!("Auto-connected to MSFS SimConnect ({})", addr),
+                                });
+                                let br = Arc::new(SpadLvarBridge::new(sc.clone()));
+                                if br.start().await.is_ok() {
+                                    let _ = br.start_lvar_discovery().await;
+                                    let _ = br.request_aircraft_name().await;
+                                    bridge = Some(br.clone());
+                                    let _ = event_tx.send(GuiEvent::BridgeStatus {
+                                        active: true,
+                                        lvar_count: 0,
+                                    });
+                                }
+                                if let (Some(ref prof), Some(ref br)) = (&active_profile, &bridge) {
+                                    let prof_guard = prof.lock().await;
+                                    executor = Some(Arc::new(ProfileExecutor::new(
+                                        prof_guard.clone(),
+                                        sc.clone(),
+                                        br.clone(),
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Periodic bridge check, live values, and aircraft name update
                 if let Some(ref br) = bridge {
                     let count = br.lvar_count().await;

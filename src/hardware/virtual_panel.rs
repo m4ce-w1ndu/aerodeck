@@ -1,4 +1,4 @@
-use super::device::{DeviceEvent, FlightPanel};
+use super::device::DeviceEvent;
 use super::multi_panel::MultiPanel;
 use super::radio_panel::RadioPanel;
 use super::switch_panel::SwitchPanel;
@@ -24,7 +24,7 @@ impl VirtualPanelHost {
         }
     }
 
-    pub fn simulate_event(&mut self, device: &str, bound_to: &str, action: &str) -> Option<DeviceEvent> {
+    pub fn simulate_event(&mut self, _device: &str, bound_to: &str, action: &str) -> Option<DeviceEvent> {
         match action.to_lowercase().as_str() {
             "press" => Some(DeviceEvent::ButtonPress { bound_to: bound_to.to_string() }),
             "release" => Some(DeviceEvent::ButtonRelease { bound_to: bound_to.to_string() }),

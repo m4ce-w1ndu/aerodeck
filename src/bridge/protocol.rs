@@ -1,5 +1,5 @@
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use std::io::{self, Cursor, Read, Write};
+use std::io::{self, Cursor, Read};
 
 // Exact ClientDataArea IDs verified from SPAD-bridge-module.wasm:
 // 1396987905 = 0x53445801 ('SDX\x01')

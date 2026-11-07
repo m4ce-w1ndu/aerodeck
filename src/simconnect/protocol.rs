@@ -1,5 +1,5 @@
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use std::io::{self, Cursor, Read, Write};
+use std::io::{self, Cursor, Read};
 
 pub const SIMCONNECT_PROTOCOL_VERSION: u32 = 0x4;
 pub const SIMCONNECT_OBJECT_ID_USER: u32 = 0;

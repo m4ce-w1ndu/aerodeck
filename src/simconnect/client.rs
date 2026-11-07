@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::{broadcast, mpsc, Mutex};
-use tracing::{debug, error, info, trace, warn};
+use tokio::sync::{broadcast, Mutex};
+use tracing::{error, info, trace, warn};
 
 use super::protocol::*;
 

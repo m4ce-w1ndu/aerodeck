@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex, oneshot};
-use tokio::time::{sleep, Duration, timeout};
-use tracing::{debug, error, info, trace, warn};
+use tokio::sync::{Mutex, oneshot};
+use tokio::time::{Duration, timeout};
+use tracing::{debug, info, trace};
 
 use crate::simconnect::{SimConnectClient, SimConnectMessage};
 use super::protocol::*;

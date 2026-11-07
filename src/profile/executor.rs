@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::bridge::{SpadLvarBridge, CALC_RET_VOID};
 use crate::simconnect::SimConnectClient;
@@ -139,7 +139,7 @@ impl ProfileExecutor {
             match act {
                 EventActionItem::Control(ctrl) => {
                     info!("Action CONTROL -> '{}' (value: {:?})", ctrl.target, ctrl.value);
-                    let event_name = ctrl.target.strip_prefix("SIMCONNECT:").unwrap_or(&ctrl.target);
+                    let _event_name = ctrl.target.strip_prefix("SIMCONNECT:").unwrap_or(&ctrl.target);
                     let val = ctrl.value.as_deref().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
                     // Transmit client event
                     let _ = self.simconnect.transmit_client_event(0, 1, val).await;

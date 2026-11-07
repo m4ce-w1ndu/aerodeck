@@ -1,4 +1,3 @@
-use anyhow::Result;
 
 pub const VENDOR_SAITEK: u16 = 0x06A3;
 pub const PID_RADIO_PANEL: u16 = 0x0D05;

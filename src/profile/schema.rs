@@ -18,8 +18,23 @@ pub struct SpadProfile {
     #[serde(rename = "Options", default)]
     pub options: Option<ProfileOptionsList>,
 
+    #[serde(rename = "AssignedAircrafts", default)]
+    pub assigned_aircrafts: Option<AssignedAircraftsList>,
+
     #[serde(rename = "Devices", default)]
     pub devices: Option<DeviceList>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssignedAircraftsList {
+    #[serde(rename = "Aircraft", default)]
+    pub items: Vec<AssignedAircraftEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignedAircraftEntry {
+    #[serde(rename = "@Name")]
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

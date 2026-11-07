@@ -102,3 +102,78 @@ fn test_proton_library_and_simconnect_xml() {
         }
     }
 }
+
+#[test]
+fn test_aircraft_discovery_binding_and_repository_profiles() {
+    use aerodeck::profile::{
+        AircraftAssignmentManager, AircraftScanner, ProfileParser, ProfileRepository,
+    };
+
+    // 1. Verify Built-in Categorized Repository profiles install and parse cleanly
+    ProfileRepository::ensure_builtin_profiles_on_disk();
+    let catalog = ProfileRepository::builtin_catalog();
+    assert!(
+        catalog.len() >= 7,
+        "Repository catalog must contain categorized profiles for Winwing, Thrustmaster TCA, and Saitek"
+    );
+
+    for entry in &catalog {
+        let installed_path = ProfileRepository::install_repository_profile(entry)
+            .expect("Repository profile should install cleanly");
+        assert!(installed_path.exists());
+        let parsed = ProfileParser::parse_file(&installed_path)
+            .unwrap_or_else(|e| panic!("Profile {} failed to parse: {}", entry.filename, e));
+        assert!(parsed.devices.is_some(), "Profile {} must have devices", entry.filename);
+        assert!(
+            !parsed.devices.as_ref().unwrap().items.is_empty(),
+            "Profile {} must have device bindings",
+            entry.filename
+        );
+    }
+
+    // 2. Verify MSFS Aircraft Discovery from Proton prefix (or fallback)
+    let aircrafts = AircraftScanner::discover_installed_aircraft(None);
+    assert!(
+        aircrafts.len() >= 15,
+        "Should discover installed MSFS aircraft (found {})",
+        aircrafts.len()
+    );
+    let has_a320 = aircrafts
+        .iter()
+        .any(|a| a.title.to_lowercase().contains("a320") || a.icao == "A20N");
+    let has_c172 = aircrafts
+        .iter()
+        .any(|a| a.title.to_lowercase().contains("skyhawk") || a.title.to_lowercase().contains("172"));
+    assert!(has_a320, "Must discover Airbus A320neo");
+    assert!(has_c172, "Must discover Cessna 172 Skyhawk");
+
+    // 3. Verify Aircraft-to-Profile Binding & Automatic Profile Switching Resolution
+    let mut mgr = AircraftAssignmentManager::load_or_default();
+    mgr.import_from_xml_profiles();
+    mgr.assign_aircraft(
+        "Airbus A320 Neo Asobo",
+        "profiles/airbus_a320_winwing_tca.xml",
+    )
+    .expect("Should bind Airbus A320 Neo Asobo");
+
+    // Verify SimConnect SystemState("AircraftLoaded") path normalization -> Canonical Title -> Bound Profile
+    let simconnect_path = r"SimObjects\AirPlanes\Asobo_A320_NEO\aircraft.cfg";
+    let norm = AircraftAssignmentManager::normalize_aircraft_identifier(simconnect_path, &aircrafts);
+    assert!(
+        norm.to_lowercase().contains("a320"),
+        "Normalized SimConnect path '{}' should resolve to A320 title, got '{}'",
+        simconnect_path,
+        norm
+    );
+
+    let resolved = mgr
+        .resolve_profile_for_aircraft(simconnect_path, &aircrafts)
+        .expect("Should resolve bound profile for A320 SimConnect path");
+    assert!(
+        resolved
+            .to_string_lossy()
+            .ends_with("airbus_a320_winwing_tca.xml"),
+        "Expected airbus_a320_winwing_tca.xml, got {:?}",
+        resolved
+    );
+}

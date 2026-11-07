@@ -5,6 +5,9 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::gui::backend::{GuiCommand, GuiEvent};
+use crate::gui::views::aircraft_profiles_view::{
+    render_aircraft_profiles_view, AircraftProfilesViewState,
+};
 use crate::gui::views::log_view::{render_log_view, LogEntry};
 use crate::gui::views::lvar_view::{render_lvar_view, LvarViewState};
 use crate::gui::views::mapping_view::{render_mapping_view, MappingViewState};
@@ -12,10 +15,14 @@ use crate::gui::views::proton_view::{render_proton_view, ProtonViewState};
 use crate::gui::views::virtual_panel_view::{render_virtual_panel_view, VirtualPanelViewState};
 use crate::hardware::enumerator::{ConnectedDevice, DeviceEnumerator};
 use crate::profile::schema::SpadProfile;
+use crate::profile::{
+    AircraftAssignmentManager, AircraftScanner, DiscoveredAircraft, ProfileRepository,
+};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ActiveTab {
     Mapping,
+    AircraftAndProfiles,
     Lvars,
     VirtualPanels,
     ProtonSetup,
@@ -51,8 +58,10 @@ pub struct SpadLinxApp {
     profile_path_input: String,
     profile_name: String,
 
-    // Real connected devices
+    // Real connected devices & discovered MSFS aircraft
     devices: Vec<ConnectedDevice>,
+    discovered_aircrafts: Vec<DiscoveredAircraft>,
+    aircraft_assignments: AircraftAssignmentManager,
 
     // Real-time telemetry
     last_input: Option<(String, String, String, Instant)>,
@@ -64,6 +73,7 @@ pub struct SpadLinxApp {
 
     // View states
     mapping_state: MappingViewState,
+    aircraft_profiles_state: AircraftProfilesViewState,
     lvar_state: LvarViewState,
     virtual_state: VirtualPanelViewState,
     proton_state: ProtonViewState,
@@ -90,6 +100,10 @@ impl SpadLinxApp {
             port
         };
 
+        let _ = ProfileRepository::ensure_builtin_profiles_on_disk();
+        let discovered_aircrafts = AircraftScanner::discover_installed_aircraft(None);
+        let aircraft_assignments = AircraftAssignmentManager::load_or_default();
+
         let mut app = Self {
             cmd_tx,
             event_rx,
@@ -105,6 +119,8 @@ impl SpadLinxApp {
             profile_path_input: initial_path_str,
             profile_name: "No Profile Loaded".to_string(),
             devices: DeviceEnumerator::enumerate_all(),
+            discovered_aircrafts,
+            aircraft_assignments,
             last_input: None,
             discovered_lvars: Vec::new(),
             live_lvar_values: HashMap::new(),
@@ -112,6 +128,7 @@ impl SpadLinxApp {
             logs: Vec::new(),
             auto_scroll_logs: true,
             mapping_state: MappingViewState::default(),
+            aircraft_profiles_state: AircraftProfilesViewState::default(),
             lvar_state: LvarViewState::default(),
             virtual_state: VirtualPanelViewState::default(),
             proton_state,
@@ -158,6 +175,20 @@ impl SpadLinxApp {
                         level: "INFO".to_string(),
                         text: format!("Active aircraft: {}", name),
                     });
+                }
+                GuiEvent::AircraftCatalogUpdated { aircrafts, assignments } => {
+                    self.discovered_aircrafts = aircrafts;
+                    self.aircraft_assignments = assignments;
+                }
+                GuiEvent::RepositoryProfileInstalled { id: _, name, path } => {
+                    self.logs.push(LogEntry {
+                        timestamp: chrono_time(),
+                        level: "INFO".to_string(),
+                        text: format!("Installed repository profile '{}' ({})", name, path),
+                    });
+                }
+                GuiEvent::OnlineProfilesQueried(resp) => {
+                    self.aircraft_profiles_state.online_soap_response = resp;
                 }
                 GuiEvent::DevicesUpdated(devs) => {
                     self.devices = devs;
@@ -282,6 +313,20 @@ impl eframe::App for SpadLinxApp {
                         &self.live_axes,
                     );
                 }
+                ActiveTab::AircraftAndProfiles => {
+                    render_aircraft_profiles_view(
+                        ui,
+                        &mut self.aircraft_profiles_state,
+                        &self.discovered_aircrafts,
+                        &self.aircraft_assignments,
+                        &self.devices,
+                        &self.aircraft_name,
+                        &self.profile_name,
+                        &self.profile_path_input,
+                        &self.proton_state.custom_prefix,
+                        &self.cmd_tx,
+                    );
+                }
                 ActiveTab::Lvars => {
                     render_lvar_view(
                         ui,
@@ -372,12 +417,34 @@ fn render_top_bar(app: &mut SpadLinxApp, ui: &mut Ui) {
             let path = PathBuf::from(&app.profile_path_input);
             let _ = app.cmd_tx.send(GuiCommand::SaveProfile(path));
         }
+
+        if ui
+            .button(
+                RichText::new("📥 Download / Bind Profiles")
+                    .color(Color32::from_rgb(0, 230, 255))
+                    .strong(),
+            )
+            .on_hover_text(
+                "Browse & download profiles categorized by device and bind profiles to MSFS aircraft",
+            )
+            .clicked()
+        {
+            app.active_tab = ActiveTab::AircraftAndProfiles;
+        }
     });
 }
 
 fn render_nav_tabs(app: &mut SpadLinxApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.selectable_value(&mut app.active_tab, ActiveTab::Mapping, "🎮 Controller Mapping & Inputs");
+        ui.selectable_value(
+            &mut app.active_tab,
+            ActiveTab::AircraftAndProfiles,
+            format!(
+                "✈ Aircraft Bindings & Profile Repository ({} Aircraft)",
+                app.discovered_aircrafts.len()
+            ),
+        );
         ui.selectable_value(&mut app.active_tab, ActiveTab::Lvars, "🔍 LVAR Explorer & MSFS Bridge");
         ui.selectable_value(&mut app.active_tab, ActiveTab::VirtualPanels, "✈ Interactive Virtual Panels");
         ui.selectable_value(&mut app.active_tab, ActiveTab::ProtonSetup, "⚙ Steam Proton Setup");

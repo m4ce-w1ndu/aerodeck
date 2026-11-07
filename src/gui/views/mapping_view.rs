@@ -753,6 +753,7 @@ fn add_action_to_profile(profile: &mut Option<SpadProfile>, state: &MappingViewS
             name: Some("Custom Profile".to_string()),
             variables: None,
             options: None,
+            assigned_aircrafts: None,
             devices: Some(crate::profile::schema::DeviceList { items: Vec::new() }),
         });
     }
@@ -937,6 +938,7 @@ fn add_axis_action_to_profile(
             name: Some("Custom Profile".to_string()),
             variables: None,
             options: None,
+            assigned_aircrafts: None,
             devices: Some(crate::profile::schema::DeviceList { items: Vec::new() }),
         });
     }

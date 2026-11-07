@@ -210,11 +210,70 @@ impl RecvException {
 }
 
 #[derive(Debug, Clone)]
+pub struct RecvSystemState {
+    pub header: RecvHeader,
+    pub request_id: u32,
+    pub integer: u32,
+    pub float: f32,
+    pub string: String,
+}
+
+impl RecvSystemState {
+    pub fn read_from(header: RecvHeader, cursor: &mut Cursor<&[u8]>) -> io::Result<Self> {
+        let request_id = cursor.read_u32::<LittleEndian>()?;
+        let integer = cursor.read_u32::<LittleEndian>()?;
+        let float = cursor.read_f32::<LittleEndian>()?;
+        let mut str_bytes = Vec::new();
+        cursor.read_to_end(&mut str_bytes)?;
+        let end = str_bytes.iter().position(|&b| b == 0).unwrap_or(str_bytes.len());
+        let string = String::from_utf8_lossy(&str_bytes[..end]).trim().to_string();
+        Ok(Self {
+            header,
+            request_id,
+            integer,
+            float,
+            string,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RecvEventFilename {
+    pub header: RecvHeader,
+    pub group_id: u32,
+    pub event_id: u32,
+    pub data: u32,
+    pub filename: String,
+}
+
+impl RecvEventFilename {
+    pub fn read_from(header: RecvHeader, cursor: &mut Cursor<&[u8]>) -> io::Result<Self> {
+        let group_id = cursor.read_u32::<LittleEndian>()?;
+        let event_id = cursor.read_u32::<LittleEndian>()?;
+        let data = cursor.read_u32::<LittleEndian>()?;
+        let mut str_bytes = Vec::new();
+        cursor.read_to_end(&mut str_bytes)?;
+        let max_len = str_bytes.len().min(260);
+        let end = str_bytes[..max_len].iter().position(|&b| b == 0).unwrap_or(max_len);
+        let filename = String::from_utf8_lossy(&str_bytes[..end]).trim().to_string();
+        Ok(Self {
+            header,
+            group_id,
+            event_id,
+            data,
+            filename,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum SimConnectMessage {
     Open(RecvOpen),
     Quit,
     ClientData(RecvClientData),
     Event(RecvEvent),
+    SystemState(RecvSystemState),
+    EventFilename(RecvEventFilename),
     Exception(RecvException),
     Raw(RecvHeader, Vec<u8>),
 }

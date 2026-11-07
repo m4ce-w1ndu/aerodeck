@@ -63,6 +63,11 @@ impl SpadLvarBridge {
         self.client.request_client_data(SPAD_SC_DYN_VARDUMP_ID, 102, SPAD_SC_DYN_VARDUMP_DATA, 1).await?;
         self.client.request_client_data(SPAD_SC_DYN_VARDATA_ID, 103, SPAD_SC_DYN_VARDATA_DATA, 1).await?;
 
+        // 3b. Also subscribe to native SimConnect AircraftLoaded system event and request current AircraftLoaded state
+        // This guarantees aircraft detection and automatic profile switching even before/without WASM initialization.
+        let _ = self.client.subscribe_to_system_event(900, "AircraftLoaded").await;
+        let _ = self.client.request_system_state(901, "AircraftLoaded").await;
+
         // Spawn packet processing loop
         let mut rx = self.client.subscribe();
         let known_lvars = self.known_lvars.clone();
@@ -113,6 +118,18 @@ impl SpadLvarBridge {
                             let mut vals = lvar_values.lock().await;
                             vals.insert(dyn_data.name, dyn_data.value);
                         }
+                    }
+                } else if let SimConnectMessage::SystemState(ss) = msg {
+                    if !ss.string.is_empty() {
+                        info!("SimConnect SystemState AircraftLoaded: '{}'", ss.string);
+                        let mut ac = aircraft_name.lock().await;
+                        *ac = ss.string;
+                    }
+                } else if let SimConnectMessage::EventFilename(ef) = msg {
+                    if !ef.filename.is_empty() {
+                        info!("SimConnect EventFilename AircraftLoaded: '{}'", ef.filename);
+                        let mut ac = aircraft_name.lock().await;
+                        *ac = ef.filename;
                     }
                 }
             }

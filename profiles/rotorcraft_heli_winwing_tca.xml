@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Profile Version="1" IsStockProfile="false">
+  <Name>Bell 407 / Cabri G2 — Helicopter Cyclic &amp; Collective</Name>
+  <AssignedAircrafts>
+    <Aircraft Name="Bell 407" />
+    <Aircraft Name="Cabri G2 Asobo" />
+  </AssignedAircrafts>
+  <Devices>
+    <Device VendorID="0x4098" ProductID="0xBC27" Name="Winwing WINCTRL URSA MINOR 32 Joystick L" ID="evdev_4098_bc27_0">
+      <DevicePage ID="default" IsDefaultPage="true" Name="Cyclic &amp; Anti-Torque">
+        <Events>
+          <Event BoundTo="AXIS_X">
+            <EventDefinitions>
+              <EventDefinition Trigger="VALUE_CHANGED">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:AXIS_AILERONS_SET" Value="0:0:0" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="AXIS_Y">
+            <EventDefinitions>
+              <EventDefinition Trigger="VALUE_CHANGED">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:AXIS_ELEVATOR_SET" Value="0:0:0" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="AXIS_RZ">
+            <EventDefinitions>
+              <EventDefinition Trigger="VALUE_CHANGED">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:AXIS_RUDDER_SET" Value="0:0:0" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+        </Events>
+      </DevicePage>
+    </Device>
+    <Device VendorID="0x044F" ProductID="0x0407" Name="Thrustmaster TCA Q-Eng 1&amp;2" ID="evdev_044f_0407_0">
+      <DevicePage ID="default" IsDefaultPage="true" Name="Collective Pitch">
+        <Events>
+          <Event BoundTo="AXIS_X">
+            <EventDefinitions>
+              <EventDefinition Trigger="VALUE_CHANGED">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:AXIS_THROTTLE_SET" Value="1:0:0" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+        </Events>
+      </DevicePage>
+    </Device>
+  </Devices>
+</Profile>

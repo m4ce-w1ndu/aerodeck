@@ -90,6 +90,24 @@ impl SimConnectClient {
                                     }
                                 }
                             }
+                            SimConnectRecvId::SystemState => {
+                                match RecvSystemState::read_from(header, &mut cursor) {
+                                    Ok(ss) => SimConnectMessage::SystemState(ss),
+                                    Err(e) => {
+                                        warn!("Failed to parse RecvSystemState: {}", e);
+                                        continue;
+                                    }
+                                }
+                            }
+                            SimConnectRecvId::EventFilename => {
+                                match RecvEventFilename::read_from(header, &mut cursor) {
+                                    Ok(ef) => SimConnectMessage::EventFilename(ef),
+                                    Err(e) => {
+                                        warn!("Failed to parse RecvEventFilename: {}", e);
+                                        continue;
+                                    }
+                                }
+                            }
                             SimConnectRecvId::Exception => {
                                 match RecvException::read_from(header, &mut cursor) {
                                     Ok(ex) => {
@@ -204,6 +222,14 @@ impl SimConnectClient {
         let mut builder = SendPacketBuilder::new(SimConnectSendId::SubscribeToSystemEvent, seq);
         builder.write_u32(event_id);
         builder.write_fixed_string(event_name, 256);
+        self.send_raw(&builder.build()).await
+    }
+
+    pub async fn request_system_state(&self, request_id: u32, state_name: &str) -> Result<()> {
+        let seq = self.next_seq();
+        let mut builder = SendPacketBuilder::new(SimConnectSendId::RequestSystemState, seq);
+        builder.write_u32(request_id);
+        builder.write_fixed_string(state_name, 256);
         self.send_raw(&builder.build()).await
     }
 

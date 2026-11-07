@@ -9,7 +9,10 @@ use tracing::trace;
 use crate::bridge::{SpadLvarBridge, CALC_RET_DOUBLE};
 use crate::hardware::device::DeviceEvent;
 use crate::hardware::enumerator::{ConnectedDevice, DeviceEnumerator};
-use crate::profile::{ProfileExecutor, ProfileParser, SpadProfile};
+use crate::profile::{
+    AircraftAssignmentManager, AircraftScanner, DiscoveredAircraft,
+    ProfileExecutor, ProfileParser, ProfileRepository, SpadProfile,
+};
 use crate::simconnect::SimConnectClient;
 
 #[derive(Debug, Clone)]
@@ -17,6 +20,16 @@ pub enum GuiEvent {
     SimConnectStatus { connected: bool, message: String },
     BridgeStatus { active: bool, lvar_count: usize },
     AircraftChanged(String),
+    AircraftCatalogUpdated {
+        aircrafts: Vec<DiscoveredAircraft>,
+        assignments: AircraftAssignmentManager,
+    },
+    RepositoryProfileInstalled {
+        id: String,
+        name: String,
+        path: String,
+    },
+    OnlineProfilesQueried(String),
     DevicesUpdated(Vec<ConnectedDevice>),
     InputTriggered {
         device: String,
@@ -51,6 +64,28 @@ pub enum GuiCommand {
     ExecCalculatorCode { code: String },
     RequestLvarScan,
     RescanDevices,
+    RescanAircrafts { custom_prefix: Option<PathBuf> },
+    BindAircraftToProfile { aircraft_title: String, profile_path: String },
+    UnbindAircraft { aircraft_title: String },
+    SetDefaultProfile(Option<String>),
+    SetAutoSwitchProfile(bool),
+    SimulateAircraftSwitch(String),
+    InstallRepositoryProfile {
+        repo_id: String,
+        activate_now: bool,
+        bind_to_aircraft: Option<String>,
+    },
+    ImportProfileFromUrl {
+        url: String,
+        save_name: String,
+        activate_now: bool,
+    },
+    QuerySpadOnlineSoap {
+        search_query: String,
+        device_vid: String,
+        device_pid: String,
+        license_token: Option<String>,
+    },
     SimulateInput { device: String, bound_to: String, action: String },
     LoadProfile(PathBuf),
     SaveProfile(PathBuf),
@@ -89,9 +124,11 @@ async fn run_backend_loop(
     let mut simconnect: Option<Arc<SimConnectClient>> = None;
     let mut bridge: Option<Arc<SpadLvarBridge>> = None;
     let mut active_profile: Option<Arc<Mutex<SpadProfile>>> = None;
+    let mut current_profile_path: Option<String> = None;
     let mut executor: Option<Arc<ProfileExecutor>> = None;
     let mut user_disconnected = false;
     let mut tick_counter: u64 = 0;
+    let mut last_active_aircraft = String::new();
 
     // 1. Unattended Proton & SimConnect Setup on Startup
     match crate::proton::ProtonConfigurator::ensure_unattended_setup(None) {
@@ -111,15 +148,35 @@ async fn run_backend_loop(
         }
     }
 
+    // 2. Ensure Built-in Categorized Device & Aircraft Profiles are installed in ./profiles/
+    ProfileRepository::ensure_builtin_profiles_on_disk();
+
+    // 3. Discover Installed MSFS Aircraft and Load Profile Assignments
+    let mut discovered_aircrafts = AircraftScanner::discover_installed_aircraft(None);
+    let mut assignments = AircraftAssignmentManager::load_or_default();
+    if assignments.assignments.is_empty() {
+        assignments.import_from_xml_profiles();
+        if assignments.default_profile.is_none() {
+            assignments.default_profile = Some("profiles/cessna_ga_winwing_tca.xml".to_string());
+        }
+        let _ = assignments.save();
+    }
+    let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
+        aircrafts: discovered_aircrafts.clone(),
+        assignments: assignments.clone(),
+    });
+
     // Load initial profile if given
     if let Some(ref p) = active_profile_path {
         match ProfileParser::parse_file(p) {
             Ok(prof) => {
                 let name = prof.name.clone().unwrap_or_else(|| "Default Profile".to_string());
+                let path_str = p.to_string_lossy().to_string();
+                current_profile_path = Some(path_str.clone());
                 active_profile = Some(Arc::new(Mutex::new(prof)));
                 let _ = event_tx.send(GuiEvent::ProfileLoaded {
                     name,
-                    path: p.to_string_lossy().to_string(),
+                    path: path_str,
                 });
             }
             Err(e) => {
@@ -302,6 +359,199 @@ async fn run_backend_loop(
                         let _ = event_tx.send(GuiEvent::DevicesUpdated(devs.clone()));
                         DeviceEnumerator::start_hardware_listeners(&devs, event_tx.clone(), shutdown.clone());
                     }
+                    Some(GuiCommand::RescanAircrafts { custom_prefix }) => {
+                        discovered_aircrafts = AircraftScanner::discover_installed_aircraft(custom_prefix);
+                        let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
+                            aircrafts: discovered_aircrafts.clone(),
+                            assignments: assignments.clone(),
+                        });
+                        let _ = event_tx.send(GuiEvent::Log {
+                            timestamp: chrono_now(),
+                            level: "INFO".to_string(),
+                            text: format!("Discovered {} installed MSFS aircraft packages.", discovered_aircrafts.len()),
+                        });
+                    }
+                    Some(GuiCommand::BindAircraftToProfile { aircraft_title, profile_path }) => {
+                        let _ = assignments.assign_aircraft(&aircraft_title, &profile_path);
+                        let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
+                            aircrafts: discovered_aircrafts.clone(),
+                            assignments: assignments.clone(),
+                        });
+                        let _ = event_tx.send(GuiEvent::Log {
+                            timestamp: chrono_now(),
+                            level: "INFO".to_string(),
+                            text: format!("Bound aircraft '{}' -> profile '{}'", aircraft_title, profile_path),
+                        });
+                    }
+                    Some(GuiCommand::UnbindAircraft { aircraft_title }) => {
+                        let _ = assignments.unassign_aircraft(&aircraft_title);
+                        let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
+                            aircrafts: discovered_aircrafts.clone(),
+                            assignments: assignments.clone(),
+                        });
+                        let _ = event_tx.send(GuiEvent::Log {
+                            timestamp: chrono_now(),
+                            level: "INFO".to_string(),
+                            text: format!("Unbound aircraft '{}'", aircraft_title),
+                        });
+                    }
+                    Some(GuiCommand::SetDefaultProfile(def_prof)) => {
+                        assignments.default_profile = def_prof.clone();
+                        let _ = assignments.save();
+                        let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
+                            aircrafts: discovered_aircrafts.clone(),
+                            assignments: assignments.clone(),
+                        });
+                        let _ = event_tx.send(GuiEvent::Log {
+                            timestamp: chrono_now(),
+                            level: "INFO".to_string(),
+                            text: format!("Updated default profile for unassigned aircraft: {:?}", def_prof),
+                        });
+                    }
+                    Some(GuiCommand::SetAutoSwitchProfile(enabled)) => {
+                        assignments.auto_switch_enabled = enabled;
+                        let _ = assignments.save();
+                        let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
+                            aircrafts: discovered_aircrafts.clone(),
+                            assignments: assignments.clone(),
+                        });
+                        let _ = event_tx.send(GuiEvent::Log {
+                            timestamp: chrono_now(),
+                            level: "INFO".to_string(),
+                            text: format!("Automatic profile switching on aircraft change: {}", if enabled { "ENABLED" } else { "DISABLED" }),
+                        });
+                    }
+                    Some(GuiCommand::SimulateAircraftSwitch(raw_ac)) => {
+                        handle_aircraft_change(
+                            &raw_ac,
+                            &mut last_active_aircraft,
+                            &discovered_aircrafts,
+                            &assignments,
+                            &mut active_profile,
+                            &mut current_profile_path,
+                            &mut executor,
+                            &simconnect,
+                            &bridge,
+                            &event_tx,
+                        ).await;
+                    }
+                    Some(GuiCommand::InstallRepositoryProfile { repo_id, activate_now, bind_to_aircraft }) => {
+                        let catalog = ProfileRepository::builtin_catalog();
+                        if let Some(entry) = catalog.iter().find(|e| e.id == repo_id) {
+                            match ProfileRepository::install_repository_profile(entry) {
+                                Ok(path) => {
+                                    let rel_path = path
+                                        .file_name()
+                                        .map(|f| format!("profiles/{}", f.to_string_lossy()))
+                                        .unwrap_or_else(|| path.to_string_lossy().to_string());
+                                    if let Ok(prof) = ProfileParser::parse_file(&path) {
+                                        let prof_name = prof.name.clone().unwrap_or_else(|| entry.name.clone());
+                                        assignments.import_from_xml_profiles();
+                                        if let Some(ref ac_title) = bind_to_aircraft {
+                                            let _ = assignments.assign_aircraft(ac_title, &rel_path);
+                                        }
+                                        let _ = event_tx.send(GuiEvent::RepositoryProfileInstalled {
+                                            id: repo_id.clone(),
+                                            name: prof_name.clone(),
+                                            path: rel_path.clone(),
+                                        });
+                                        let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
+                                            aircrafts: discovered_aircrafts.clone(),
+                                            assignments: assignments.clone(),
+                                        });
+                                        let _ = event_tx.send(GuiEvent::Log {
+                                            timestamp: chrono_now(),
+                                            level: "INFO".to_string(),
+                                            text: format!("Installed repository profile '{}' to {}", prof_name, rel_path),
+                                        });
+                                        if activate_now {
+                                            current_profile_path = Some(rel_path.clone());
+                                            active_profile = Some(Arc::new(Mutex::new(prof.clone())));
+                                            if let (Some(ref sc), Some(ref br)) = (&simconnect, &bridge) {
+                                                executor = Some(Arc::new(ProfileExecutor::new(
+                                                    prof,
+                                                    sc.clone(),
+                                                    br.clone(),
+                                                )));
+                                            }
+                                            let _ = event_tx.send(GuiEvent::ProfileLoaded {
+                                                name: prof_name,
+                                                path: rel_path,
+                                            });
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = event_tx.send(GuiEvent::Error(format!("Failed to install profile '{}': {}", repo_id, e)));
+                                }
+                            }
+                        }
+                    }
+                    Some(GuiCommand::ImportProfileFromUrl { url, save_name, activate_now }) => {
+                        match ProfileRepository::download_profile_from_url(&url, &save_name) {
+                            Ok(path) => {
+                                let rel_path = path
+                                    .file_name()
+                                    .map(|f| format!("profiles/{}", f.to_string_lossy()))
+                                    .unwrap_or_else(|| path.to_string_lossy().to_string());
+                                if let Ok(prof) = ProfileParser::parse_file(&path) {
+                                    let prof_name = prof.name.clone().unwrap_or_else(|| save_name.clone());
+                                    assignments.import_from_xml_profiles();
+                                    let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
+                                        aircrafts: discovered_aircrafts.clone(),
+                                        assignments: assignments.clone(),
+                                    });
+                                    let _ = event_tx.send(GuiEvent::Log {
+                                        timestamp: chrono_now(),
+                                        level: "INFO".to_string(),
+                                        text: format!("Downloaded profile '{}' from {} -> {}", prof_name, url, rel_path),
+                                    });
+                                    if activate_now {
+                                        current_profile_path = Some(rel_path.clone());
+                                        active_profile = Some(Arc::new(Mutex::new(prof.clone())));
+                                        if let (Some(ref sc), Some(ref br)) = (&simconnect, &bridge) {
+                                            executor = Some(Arc::new(ProfileExecutor::new(
+                                                prof,
+                                                sc.clone(),
+                                                br.clone(),
+                                            )));
+                                        }
+                                        let _ = event_tx.send(GuiEvent::ProfileLoaded {
+                                            name: prof_name,
+                                            path: rel_path,
+                                        });
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(GuiEvent::Error(format!("URL download failed: {}", e)));
+                            }
+                        }
+                    }
+                    Some(GuiCommand::QuerySpadOnlineSoap { search_query: _, device_vid, device_pid, license_token }) => {
+                        let provider = format!("{}:{}", device_vid.trim_start_matches("0x"), device_pid.trim_start_matches("0x"));
+                        match ProfileRepository::query_spad_online_soap(
+                            &provider,
+                            0,
+                            license_token.as_deref(),
+                        ) {
+                            Ok(resp) => {
+                                let _ = event_tx.send(GuiEvent::Log {
+                                    timestamp: chrono_now(),
+                                    level: "INFO".to_string(),
+                                    text: format!("SPAD.neXt SOAP repository response received ({} bytes).", resp.len()),
+                                });
+                                let _ = event_tx.send(GuiEvent::OnlineProfilesQueried(resp));
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(GuiEvent::Log {
+                                    timestamp: chrono_now(),
+                                    level: "WARN".to_string(),
+                                    text: format!("SPAD.neXt SOAP query: {}", e),
+                                });
+                            }
+                        }
+                    }
                     Some(GuiCommand::SimulateInput { device, bound_to, action }) => {
                         let _ = event_tx.send(GuiEvent::InputTriggered {
                             device: device.clone(),
@@ -331,6 +581,8 @@ async fn run_backend_loop(
                         match ProfileParser::parse_file(&path) {
                             Ok(prof) => {
                                 let name = prof.name.clone().unwrap_or_else(|| "Loaded Profile".to_string());
+                                let path_str = path.to_string_lossy().to_string();
+                                current_profile_path = Some(path_str.clone());
                                 active_profile = Some(Arc::new(Mutex::new(prof.clone())));
                                 if let (Some(ref sc), Some(ref br)) = (&simconnect, &bridge) {
                                     executor = Some(Arc::new(ProfileExecutor::new(
@@ -341,7 +593,7 @@ async fn run_backend_loop(
                                 }
                                 let _ = event_tx.send(GuiEvent::ProfileLoaded {
                                     name,
-                                    path: path.to_string_lossy().to_string(),
+                                    path: path_str,
                                 });
                             }
                             Err(e) => {
@@ -428,10 +680,80 @@ async fn run_backend_loop(
                         let _ = event_tx.send(GuiEvent::LvarUpdated { name: k, value: v });
                     }
                     let ac_name = br.get_active_aircraft().await;
-                    if !ac_name.is_empty() {
-                        let _ = event_tx.send(GuiEvent::AircraftChanged(ac_name));
+                    if !ac_name.is_empty() && ac_name != last_active_aircraft {
+                        handle_aircraft_change(
+                            &ac_name,
+                            &mut last_active_aircraft,
+                            &discovered_aircrafts,
+                            &assignments,
+                            &mut active_profile,
+                            &mut current_profile_path,
+                            &mut executor,
+                            &simconnect,
+                            &bridge,
+                            &event_tx,
+                        ).await;
                     }
                 }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_aircraft_change(
+    raw_ac: &str,
+    last_active_aircraft: &mut String,
+    discovered_aircrafts: &[DiscoveredAircraft],
+    assignments: &AircraftAssignmentManager,
+    active_profile: &mut Option<Arc<Mutex<SpadProfile>>>,
+    current_profile_path: &mut Option<String>,
+    executor: &mut Option<Arc<ProfileExecutor>>,
+    simconnect: &Option<Arc<SimConnectClient>>,
+    bridge: &Option<Arc<SpadLvarBridge>>,
+    event_tx: &mpsc::UnboundedSender<GuiEvent>,
+) {
+    *last_active_aircraft = raw_ac.to_string();
+    let canonical = AircraftAssignmentManager::normalize_aircraft_identifier(raw_ac, discovered_aircrafts);
+    let _ = event_tx.send(GuiEvent::AircraftChanged(canonical.clone()));
+
+    if !assignments.auto_switch_enabled {
+        return;
+    }
+
+    if let Some(target_profile_buf) = assignments.resolve_profile_for_aircraft(&canonical, discovered_aircrafts)
+        .or_else(|| assignments.resolve_profile_for_aircraft(raw_ac, discovered_aircrafts))
+    {
+        let target_profile_path = target_profile_buf.to_string_lossy().to_string();
+        let already_loaded = current_profile_path
+            .as_deref()
+            .map(|cur| cur == target_profile_path || cur.ends_with(&target_profile_path))
+            .unwrap_or(false);
+
+        if !already_loaded && target_profile_buf.exists() {
+            if let Ok(prof) = ProfileParser::parse_file(&target_profile_buf) {
+                let prof_name = prof.name.clone().unwrap_or_else(|| target_profile_path.clone());
+                *current_profile_path = Some(target_profile_path.clone());
+                *active_profile = Some(Arc::new(Mutex::new(prof.clone())));
+                if let (Some(ref sc), Some(ref br)) = (simconnect, bridge) {
+                    *executor = Some(Arc::new(ProfileExecutor::new(
+                        prof,
+                        sc.clone(),
+                        br.clone(),
+                    )));
+                }
+                let _ = event_tx.send(GuiEvent::ProfileLoaded {
+                    name: prof_name.clone(),
+                    path: target_profile_path.clone(),
+                });
+                let _ = event_tx.send(GuiEvent::Log {
+                    timestamp: chrono_now(),
+                    level: "INFO".to_string(),
+                    text: format!(
+                        "[AUTO-SWITCH] Aircraft switched to '{}' -> Automatically loaded bound profile '{}' ({})",
+                        canonical, prof_name, target_profile_path
+                    ),
+                });
             }
         }
     }

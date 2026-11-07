@@ -1,8 +1,10 @@
 use eframe::egui::{self, Color32, RichText, Ui, Vec2};
+use std::collections::HashMap;
 use std::time::Instant;
 
+use crate::gui::app::LiveAxisState;
 use crate::gui::backend::GuiCommand;
-use crate::gui::presets::{COMMON_CALCULATOR_CODES, SIMCONNECT_PRESETS};
+use crate::gui::presets::{COMMON_CALCULATOR_CODES, SIMCONNECT_AXIS_PRESETS, SIMCONNECT_PRESETS};
 use crate::hardware::enumerator::ConnectedDevice;
 use crate::profile::schema::{
     EventActionControl, EventActionItem, EventActionScript, EventConditionItem, EventConditionSimple,
@@ -16,7 +18,12 @@ pub struct MappingViewState {
     pub follow_active_input: bool,
     pub input_type_filter: InputFilterType,
 
-    // Add action form state
+    // Axis calibration & options
+    pub axis_invert: bool,
+    pub axis_deadzone_pct: f32,
+    pub selected_axis_preset_idx: usize,
+
+    // Add action form state (Buttons/Switches)
     pub new_action_type: ActionTypeChoice,
     pub selected_preset_idx: usize,
     pub custom_target: String,
@@ -53,6 +60,9 @@ impl Default for MappingViewState {
             filter_query: String::new(),
             follow_active_input: true,
             input_type_filter: InputFilterType::All,
+            axis_invert: false,
+            axis_deadzone_pct: 1.0,
+            selected_axis_preset_idx: 0,
             new_action_type: ActionTypeChoice::SimConnectPreset,
             selected_preset_idx: 0,
             custom_target: "SIMCONNECT:TOGGLE_MASTER_BATTERY".to_string(),
@@ -74,6 +84,7 @@ pub fn render_mapping_view(
     last_input: &Option<(String, String, String, Instant)>,
     discovered_lvars: &[String],
     devices: &[ConnectedDevice],
+    live_axes: &HashMap<String, LiveAxisState>,
 ) {
     // 1. TOP BANNER: Live Real Hardware Input Detection
     render_live_input_banner(ui, state, last_input, devices);
@@ -85,10 +96,10 @@ pub fn render_mapping_view(
     // 2. MAIN 2-COLUMN SPLIT: Left = Device & Input List, Right = Mapping & Action Editor
     ui.columns(2, |columns| {
         // --- LEFT COLUMN: Connected Hardware Device selector & Inputs ---
-        render_device_and_input_column(&mut columns[0], state, profile, last_input, devices, cmd_tx);
+        render_device_and_input_column(&mut columns[0], state, profile, last_input, devices, cmd_tx, live_axes);
 
         // --- RIGHT COLUMN: Mappings & Action Configurator ---
-        render_action_editor_column(&mut columns[1], state, profile, cmd_tx, discovered_lvars, devices);
+        render_action_editor_column(&mut columns[1], state, profile, cmd_tx, discovered_lvars, devices, live_axes);
     });
 }
 
@@ -149,6 +160,7 @@ fn render_device_and_input_column(
     last_input: &Option<(String, String, String, Instant)>,
     devices: &[ConnectedDevice],
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<GuiCommand>,
+    live_axes: &HashMap<String, LiveAxisState>,
 ) {
     ui.heading(RichText::new("Connected Flight Hardware & Inputs").color(Color32::from_rgb(100, 180, 255)));
     ui.add_space(4.0);
@@ -263,10 +275,19 @@ fn render_device_and_input_column(
                 // Count mapped actions in profile
                 let mapped_count = count_actions_for_input(profile, inp);
 
-                let label_text = if mapped_count > 0 {
-                    format!("{}  [{} action{}]", inp, mapped_count, if mapped_count == 1 { "" } else { "s" })
+                let is_axis = active_device.axes.contains(inp);
+                let axis_str = if let Some(ax) = live_axes.get(inp).or_else(|| live_axes.get(&format!("{}:{}", active_device.name, inp))) {
+                    format!("⚡ {} ({:+.0}%)", inp, ax.normalized * 100.0)
+                } else if is_axis {
+                    format!("⚡ {}", inp)
                 } else {
-                    inp.to_string()
+                    format!("🔘 {}", inp)
+                };
+
+                let label_text = if mapped_count > 0 {
+                    format!("{}  [{} action{}]", axis_str, mapped_count, if mapped_count == 1 { "" } else { "s" })
+                } else {
+                    axis_str
                 };
 
                 let mut text = RichText::new(label_text);
@@ -290,6 +311,7 @@ fn render_action_editor_column(
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<GuiCommand>,
     discovered_lvars: &[String],
     devices: &[ConnectedDevice],
+    live_axes: &HashMap<String, LiveAxisState>,
 ) {
     let display_input = if state.selected_input.is_empty() {
         "Select an input on the left"
@@ -297,10 +319,36 @@ fn render_action_editor_column(
         &state.selected_input
     };
 
-    ui.heading(RichText::new(format!("Mapping: {}", display_input)).color(Color32::from_rgb(255, 200, 100)));
+    let active_dev = devices.get(state.selected_device_idx);
+    let is_axis = active_dev.map(|d| d.axes.iter().any(|a| a == &state.selected_input)).unwrap_or(false);
+
+    ui.horizontal(|ui| {
+        ui.heading(RichText::new(format!("Mapping: {}", display_input)).color(Color32::from_rgb(255, 200, 100)));
+        if is_axis {
+            ui.label(RichText::new("⚡ ANALOG AXIS").color(Color32::from_rgb(0, 220, 255)).strong());
+        }
+    });
     ui.add_space(4.0);
 
-    // 1. Current bindings list
+    // 1. Current configured bindings list
+    render_current_bindings_group(ui, state, profile, cmd_tx);
+
+    ui.add_space(8.0);
+
+    // 2. Specialized editor: Axis Telemetry & Presets OR Button/Switch Form
+    if is_axis {
+        render_axis_editor(ui, state, profile, cmd_tx, devices, live_axes);
+    } else {
+        render_button_editor(ui, state, profile, cmd_tx, discovered_lvars, devices);
+    }
+}
+
+fn render_current_bindings_group(
+    ui: &mut Ui,
+    state: &mut MappingViewState,
+    profile: &mut Option<SpadProfile>,
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<GuiCommand>,
+) {
     ui.group(|ui| {
         ui.label(RichText::new("Configured Profile Actions:").strong());
         ui.add_space(2.0);
@@ -374,15 +422,155 @@ fn render_action_editor_column(
             let _ = cmd_tx.send(cmd);
         }
 
-        // Apply deletion if requested
         if let Some((def_idx, act_idx)) = to_remove {
             remove_action_from_profile(profile, &state.selected_input, def_idx, act_idx);
         }
     });
+}
+
+fn render_axis_editor(
+    ui: &mut Ui,
+    state: &mut MappingViewState,
+    profile: &mut Option<SpadProfile>,
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<GuiCommand>,
+    devices: &[ConnectedDevice],
+    live_axes: &HashMap<String, LiveAxisState>,
+) {
+    let active_dev = match devices.get(state.selected_device_idx) {
+        Some(d) => d,
+        None => return,
+    };
+
+    // --- Live Telemetry & Calibration Section ---
+    ui.group(|ui| {
+        ui.heading(RichText::new("Live Axis Telemetry & Calibration").color(Color32::from_rgb(0, 220, 255)));
+        ui.add_space(4.0);
+
+        let maybe_ax = live_axes.get(&state.selected_input).or_else(|| {
+            live_axes.get(&format!("{}:{}", active_dev.name, state.selected_input))
+        });
+
+        let (norm_val, raw_val, min_val, max_val) = if let Some(ax) = maybe_ax {
+            (ax.normalized, ax.raw, ax.min, ax.max)
+        } else {
+            let (min, max) = active_dev.axis_ranges.get(&state.selected_input).copied().unwrap_or((0, 65535));
+            (0.0, min, min, max)
+        };
+
+        let is_bipolar = min_val < 0;
+
+        let effective_norm = if state.axis_invert {
+            if is_bipolar { -norm_val } else { 1.0 - norm_val }
+        } else {
+            norm_val
+        };
+
+        let bar_progress = if is_bipolar {
+            ((effective_norm + 1.0) / 2.0).clamp(0.0, 1.0) as f32
+        } else {
+            effective_norm.clamp(0.0, 1.0) as f32
+        };
+
+        let bar_text = if is_bipolar {
+            format!("{:+.1}% (Centered)", effective_norm * 100.0)
+        } else {
+            format!("{:.1}%", effective_norm * 100.0)
+        };
+
+        ui.add(
+            egui::ProgressBar::new(bar_progress)
+                .show_percentage()
+                .text(bar_text)
+                .animate(true)
+        );
+
+        ui.add_space(4.0);
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("Raw Evdev: {}", raw_val)).strong());
+            ui.separator();
+            ui.label(format!("Hardware Limits: [{} .. {}]", min_val, max_val));
+            ui.separator();
+            let polarity = if is_bipolar { "Bipolar (-Max .. +Max)" } else { "Unipolar (0 .. Max)" };
+            ui.label(RichText::new(polarity).color(Color32::from_rgb(180, 200, 255)).small());
+        });
+
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut state.axis_invert, "Invert Axis Direction");
+            ui.separator();
+            ui.add(egui::Slider::new(&mut state.axis_deadzone_pct, 0.0..=15.0).text("Deadzone %"));
+        });
+    });
 
     ui.add_space(8.0);
 
-    // 2. Add New Action Form
+    // --- SimConnect Event Binding Section ---
+    ui.group(|ui| {
+        ui.heading(RichText::new("Axis Flight Simulator Event Mapping").color(Color32::from_rgb(140, 220, 140)));
+        ui.add_space(4.0);
+
+        if state.selected_axis_preset_idx >= SIMCONNECT_AXIS_PRESETS.len() {
+            state.selected_axis_preset_idx = 0;
+        }
+
+        let current_preset = &SIMCONNECT_AXIS_PRESETS[state.selected_axis_preset_idx];
+
+        ui.horizontal(|ui| {
+            ui.label("Axis Preset:");
+            egui::ComboBox::from_id_salt("axis_preset_combo")
+                .width(360.0)
+                .selected_text(format!("[{}] {}", current_preset.category, current_preset.description))
+                .show_ui(ui, |ui| {
+                    for (idx, p) in SIMCONNECT_AXIS_PRESETS.iter().enumerate() {
+                        ui.selectable_value(&mut state.selected_axis_preset_idx, idx, format!("[{}] {} ({})", p.category, p.description, p.name));
+                    }
+                });
+        });
+
+        let current_preset = &SIMCONNECT_AXIS_PRESETS[state.selected_axis_preset_idx];
+        ui.label(RichText::new(format!("Target SimEvent: {} (Scale: {})", current_preset.name, if current_preset.is_bipolar { "-16383 .. 16383" } else { "0 .. 16383" })).italics().color(Color32::LIGHT_GRAY));
+
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            if ui.button(RichText::new("➕ Bind Axis to Profile").color(Color32::from_rgb(100, 255, 100)).strong()).clicked() {
+                add_axis_action_to_profile(profile, state, devices, current_preset.name);
+            }
+
+            if ui.button("⚡ Test Transmit Axis Value").clicked() {
+                let maybe_ax = live_axes.get(&state.selected_input).or_else(|| {
+                    live_axes.get(&format!("{}:{}", active_dev.name, state.selected_input))
+                });
+                let norm = maybe_ax.map(|a| a.normalized).unwrap_or(0.0);
+                let eff = if state.axis_invert {
+                    if current_preset.is_bipolar { -norm } else { 1.0 - norm }
+                } else {
+                    norm
+                };
+                let sim_val = if current_preset.is_bipolar {
+                    (eff * 16383.0).round().clamp(-16383.0, 16383.0) as i32
+                } else {
+                    (eff * 16383.0).round().clamp(0.0, 16383.0) as i32
+                };
+                let _ = cmd_tx.send(GuiCommand::FireAxisEvent {
+                    event_name: current_preset.name.to_string(),
+                    value: sim_val,
+                });
+            }
+        });
+    });
+}
+
+fn render_button_editor(
+    ui: &mut Ui,
+    state: &mut MappingViewState,
+    profile: &mut Option<SpadProfile>,
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<GuiCommand>,
+    discovered_lvars: &[String],
+    devices: &[ConnectedDevice],
+) {
     ui.group(|ui| {
         ui.heading(RichText::new("Add Action / Binding").color(Color32::from_rgb(140, 220, 140)));
         ui.add_space(4.0);
@@ -729,4 +917,112 @@ fn remove_action_from_profile(profile: &mut Option<SpadProfile>, bound_to: &str,
             }
         }
     }
+}
+
+fn add_axis_action_to_profile(
+    profile: &mut Option<SpadProfile>,
+    state: &MappingViewState,
+    devices: &[ConnectedDevice],
+    event_name: &str,
+) {
+    if devices.is_empty() || state.selected_device_idx >= devices.len() {
+        return;
+    }
+    let active_dev = &devices[state.selected_device_idx];
+
+    if profile.is_none() {
+        *profile = Some(SpadProfile {
+            version: Some(1),
+            is_stock_profile: Some(false),
+            name: Some("Custom Profile".to_string()),
+            variables: None,
+            options: None,
+            devices: Some(crate::profile::schema::DeviceList { items: Vec::new() }),
+        });
+    }
+
+    let prof = profile.as_mut().unwrap();
+    if prof.devices.is_none() {
+        prof.devices = Some(crate::profile::schema::DeviceList { items: Vec::new() });
+    }
+
+    let devs = prof.devices.as_mut().unwrap();
+
+    let dev_idx = match devs.items.iter().position(|d| {
+        d.id.as_deref() == Some(&active_dev.id)
+            || d.product_id.as_deref() == Some(&format!("{:04X}", active_dev.product_id))
+    }) {
+        Some(idx) => idx,
+        None => {
+            devs.items.push(crate::profile::schema::DeviceProfile {
+                vendor_id: Some(format!("{:04X}", active_dev.vendor_id)),
+                product_id: Some(format!("{:04X}", active_dev.product_id)),
+                device_path: active_dev.path.as_ref().map(|p| p.to_string_lossy().to_string()),
+                serial: None,
+                device_index: Some(0),
+                name: Some(active_dev.name.clone()),
+                id: Some(active_dev.id.clone()),
+                pages: vec![crate::profile::schema::DevicePage {
+                    id: Some("Default".to_string()),
+                    is_default: Some(true),
+                    name: Some("Default".to_string()),
+                    events: Some(EventList { items: Vec::new() }),
+                }],
+            });
+            devs.items.len() - 1
+        }
+    };
+
+    let dev = &mut devs.items[dev_idx];
+    if dev.pages.is_empty() {
+        dev.pages.push(crate::profile::schema::DevicePage {
+            id: Some("Default".to_string()),
+            is_default: Some(true),
+            name: Some("Default".to_string()),
+            events: Some(EventList { items: Vec::new() }),
+        });
+    }
+
+    let page = &mut dev.pages[0];
+    if page.events.is_none() {
+        page.events = Some(EventList { items: Vec::new() });
+    }
+
+    let events = page.events.as_mut().unwrap();
+    let ev_idx = match events.items.iter().position(|e| e.bound_to == state.selected_input) {
+        Some(idx) => idx,
+        None => {
+            events.items.push(SpadEvent {
+                bound_to: state.selected_input.clone(),
+                config_id: None,
+                event_definitions: Some(EventDefinitionsList { items: Vec::new() }),
+            });
+            events.items.len() - 1
+        }
+    };
+
+    let spad_event = &mut events.items[ev_idx];
+    if spad_event.event_definitions.is_none() {
+        spad_event.event_definitions = Some(EventDefinitionsList { items: Vec::new() });
+    }
+
+    let defs = spad_event.event_definitions.as_mut().unwrap();
+
+    let new_action = EventActionItem::Control(EventActionControl {
+        target: format!("SIMCONNECT:{}", event_name),
+        value: Some("AXIS_VALUE".to_string()),
+    });
+
+    let new_def = EventDefinition {
+        trigger: Some("MOVE".to_string()),
+        priority: Some(0),
+        is_final: Some(false),
+        condition_binding: Some("All".to_string()),
+        conditions: None,
+        actions: Some(crate::profile::schema::EventActionsList {
+            items: vec![new_action],
+        }),
+    };
+
+    defs.items.push(new_def);
 }

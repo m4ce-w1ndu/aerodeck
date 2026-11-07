@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -41,6 +42,7 @@ pub struct ConnectedDevice {
     pub inputs: Vec<String>,
     pub buttons: Vec<String>,
     pub axes: Vec<String>,
+    pub axis_ranges: HashMap<String, (i32, i32)>,
 }
 
 impl ConnectedDevice {
@@ -163,6 +165,14 @@ impl DeviceEnumerator {
                 DeviceCategory::Gamepad
             };
 
+            let mut axis_ranges = HashMap::new();
+            if let Ok(abs_infos) = device.get_absinfo() {
+                for (code, info) in abs_infos {
+                    let axis_name = format_axis_name(code);
+                    axis_ranges.insert(axis_name, (info.minimum(), info.maximum()));
+                }
+            }
+
             let mut all_inputs = Vec::new();
             all_inputs.extend(buttons.clone());
             all_inputs.extend(axes.clone());
@@ -181,6 +191,7 @@ impl DeviceEnumerator {
                 inputs: all_inputs,
                 buttons,
                 axes,
+                axis_ranges,
             });
         }
     }
@@ -241,6 +252,7 @@ impl DeviceEnumerator {
                         inputs: inputs.clone(),
                         buttons: inputs,
                         axes: Vec::new(),
+                        axis_ranges: HashMap::new(),
                     });
                 }
             }
@@ -261,6 +273,10 @@ impl DeviceEnumerator {
         ];
         let inputs_vec: Vec<String> = inputs.into_iter().map(|s| s.to_string()).collect();
 
+        let mut axis_ranges = HashMap::new();
+        axis_ranges.insert("SIM_THROTTLE_1".to_string(), (0, 16383));
+        axis_ranges.insert("SIM_THROTTLE_2".to_string(), (0, 16383));
+
         ConnectedDevice {
             id: "virtual_flight_panel".to_string(),
             name: "Virtual Flight Panel Simulator".to_string(),
@@ -271,6 +287,7 @@ impl DeviceEnumerator {
             inputs: inputs_vec.clone(),
             buttons: inputs_vec,
             axes: vec!["SIM_THROTTLE_1".to_string(), "SIM_THROTTLE_2".to_string()],
+            axis_ranges,
         }
     }
 
@@ -296,6 +313,13 @@ impl DeviceEnumerator {
                             return;
                         }
                     };
+
+                    let mut axis_cache: HashMap<u16, (i32, i32, i32)> = HashMap::new();
+                    if let Ok(infos) = ev_device.get_absinfo() {
+                        for (code, info) in infos {
+                            axis_cache.insert(code.0, (info.minimum(), info.maximum(), info.value()));
+                        }
+                    }
 
                     info!("Started real-time event listener on hardware controller '{}' ({:?})", dev_name, path_clone);
 
@@ -346,6 +370,42 @@ impl DeviceEnumerator {
                                                     send_hat_event(&etx, &dev_name, "HAT0_LEFT", "PRESS");
                                                 } else if val == 0 {
                                                     send_hat_event(&etx, &dev_name, "HAT0_X", "CENTER");
+                                                }
+                                            } else {
+                                                // Analog flight axis (ABS_X, ABS_Y, ABS_Z, ABS_RX, ABS_RY, ABS_RZ, ABS_THROTTLE, etc.)
+                                                let (min, max, last_val) = axis_cache.get(&axis_code.0).copied().unwrap_or((0, 65535, val));
+                                                let span = (max - min).abs();
+                                                let deadband = (span / 256).max(1);
+
+                                                if (val - last_val).abs() >= deadband || val == min || val == max {
+                                                    axis_cache.insert(axis_code.0, (min, max, val));
+
+                                                    let normalized = if min < 0 {
+                                                        (val as f64 / max.max(1) as f64).clamp(-1.0, 1.0)
+                                                    } else {
+                                                        if span > 0 {
+                                                            ((val - min) as f64 / span as f64).clamp(0.0, 1.0)
+                                                        } else {
+                                                            0.0
+                                                        }
+                                                    };
+
+                                                    let _ = etx.send(GuiEvent::AxisMoved {
+                                                        device: dev_name.clone(),
+                                                        bound_to: axis_name.clone(),
+                                                        raw_value: val,
+                                                        normalized,
+                                                        min,
+                                                        max,
+                                                        time: Instant::now(),
+                                                    });
+
+                                                    let _ = etx.send(GuiEvent::InputTriggered {
+                                                        device: dev_name.clone(),
+                                                        bound_to: axis_name.clone(),
+                                                        action: format!("{:.1}%", normalized * 100.0),
+                                                        time: Instant::now(),
+                                                    });
                                                 }
                                             }
                                         }

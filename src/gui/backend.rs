@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{sleep, Duration};
+use tracing::trace;
 
 use crate::bridge::{SpadLvarBridge, CALC_RET_DOUBLE};
 use crate::hardware::device::DeviceEvent;
@@ -23,6 +24,15 @@ pub enum GuiEvent {
         action: String,
         time: Instant,
     },
+    AxisMoved {
+        device: String,
+        bound_to: String,
+        raw_value: i32,
+        normalized: f64,
+        min: i32,
+        max: i32,
+        time: Instant,
+    },
     LvarsDiscovered(Vec<String>),
     LvarUpdated { name: String, value: f64 },
     Log { timestamp: String, level: String, text: String },
@@ -36,6 +46,7 @@ pub enum GuiCommand {
     ConnectSimConnect { host: String, port: u16 },
     DisconnectSimConnect,
     FireSimConnectEvent { event_name: String, value: u32 },
+    FireAxisEvent { event_name: String, value: i32 },
     SetLvar { name: String, value: f64 },
     ExecCalculatorCode { code: String },
     RequestLvarScan,
@@ -202,6 +213,13 @@ async fn run_backend_loop(
                                 level: "WARN".to_string(),
                                 text: format!("Cannot fire '{}': SimConnect not connected", event_name),
                             });
+                        }
+                    }
+                    Some(GuiCommand::FireAxisEvent { event_name, value }) => {
+                        if let Some(ref sc) = simconnect {
+                            let _ = sc.map_client_event_to_sim_event(2, &event_name).await;
+                            let _ = sc.transmit_client_event(0, 2, value as u32).await;
+                            trace!("Dispatched SimConnect Axis: {} = {}", event_name, value);
                         }
                     }
                     Some(GuiCommand::SetLvar { name, value }) => {

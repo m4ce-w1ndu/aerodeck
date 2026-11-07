@@ -63,6 +63,75 @@ impl ProfileExecutor {
         }
     }
 
+    /// Dispatches an analog axis event to SimConnect based on profile mapping
+    pub async fn dispatch_axis_event(
+        &self,
+        device_id: &str,
+        bound_to: &str,
+        normalized: f64,
+        is_bipolar: bool,
+    ) -> Result<bool> {
+        debug!("Dispatching axis on device '{}': bound_to='{}', normalized={}", device_id, bound_to, normalized);
+
+        let devices = match &self.profile.devices {
+            Some(d) => &d.items,
+            None => return Ok(false),
+        };
+
+        let device = devices.iter().find(|d| {
+            d.id.as_deref() == Some(device_id)
+                || d.product_id.as_deref() == Some(device_id)
+                || d.name.as_deref() == Some(device_id)
+        });
+
+        let device = match device {
+            Some(d) => d,
+            None => return Ok(false),
+        };
+
+        if device.pages.is_empty() {
+            return Ok(false);
+        }
+
+        let page_idx = *self.active_page_idx.lock().await;
+        let page = &device.pages[page_idx.min(device.pages.len() - 1)];
+
+        let events = match &page.events {
+            Some(e) => &e.items,
+            None => return Ok(false),
+        };
+
+        let spad_event = match events.iter().find(|e| e.bound_to.eq_ignore_ascii_case(bound_to)) {
+            Some(e) => e,
+            None => return Ok(false),
+        };
+
+        let defs = match &spad_event.event_definitions {
+            Some(d) => &d.items,
+            None => return Ok(false),
+        };
+
+        let sim_axis_value = if is_bipolar {
+            (normalized * 16383.0).round().clamp(-16383.0, 16383.0) as i32
+        } else {
+            (normalized * 16383.0).round().clamp(0.0, 16383.0) as i32
+        };
+
+        for def in defs {
+            if let Some(actions) = &def.actions {
+                for act in &actions.items {
+                    if let EventActionItem::Control(ctrl) = act {
+                        let event_name = ctrl.target.strip_prefix("SIMCONNECT:").unwrap_or(&ctrl.target);
+                        let _ = self.simconnect.map_client_event_to_sim_event(2, event_name).await;
+                        let _ = self.simconnect.transmit_client_event(0, 2, sim_axis_value as u32).await;
+                    }
+                }
+            }
+        }
+
+        Ok(true)
+    }
+
     /// Triggers an input event from a hardware device (e.g. bound_to: "AP_BUTTON", trigger: "PRESSED")
     pub async fn dispatch_event(&self, device_id: &str, bound_to: &str, trigger: &str) -> Result<bool> {
         debug!("Dispatching event on device '{}': bound_to='{}', trigger='{}'", device_id, bound_to, trigger);

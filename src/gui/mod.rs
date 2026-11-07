@@ -15,12 +15,12 @@ pub fn run_gui(profile_path: Option<PathBuf>, simconnect_host: String, simconnec
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 840.0])
             .with_min_inner_size([960.0, 600.0])
-            .with_title("SPAD-LINX - Flight Controller & Profile Mapper"),
+            .with_title("AeroDeck - Flight Controller & Telemetry Suite"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "SPAD-LINX",
+        "AeroDeck",
         native_options,
         Box::new(move |cc| {
             // Configure aviation dark cockpit theme

@@ -1,10 +1,11 @@
-use spad_linx::gui::presets::{SIMCONNECT_PRESETS, STANDARD_DEVICES, COMMON_CALCULATOR_CODES};
+use spad_linx::gui::presets::{COMMON_CALCULATOR_CODES, SIMCONNECT_AXIS_PRESETS, SIMCONNECT_PRESETS, STANDARD_DEVICES};
 
 #[test]
 fn test_presets_coverage() {
     assert!(!SIMCONNECT_PRESETS.is_empty());
     assert!(!STANDARD_DEVICES.is_empty());
     assert!(!COMMON_CALCULATOR_CODES.is_empty());
+    assert!(!SIMCONNECT_AXIS_PRESETS.is_empty());
 
     // Verify key flight presets exist
     let has_battery = SIMCONNECT_PRESETS.iter().any(|p| p.name == "TOGGLE_MASTER_BATTERY");
@@ -14,6 +15,17 @@ fn test_presets_coverage() {
     assert!(has_battery);
     assert!(has_alt_inc);
     assert!(has_gear);
+
+    // Verify key analog axis presets exist
+    let has_aileron = SIMCONNECT_AXIS_PRESETS.iter().any(|p| p.name == "AXIS_AILERONS_SET" && p.is_bipolar);
+    let has_elevator = SIMCONNECT_AXIS_PRESETS.iter().any(|p| p.name == "AXIS_ELEVATOR_SET" && p.is_bipolar);
+    let has_throttle = SIMCONNECT_AXIS_PRESETS.iter().any(|p| p.name == "AXIS_THROTTLE_SET" && !p.is_bipolar);
+    let has_flaps = SIMCONNECT_AXIS_PRESETS.iter().any(|p| p.name == "AXIS_FLAPS_SET" && !p.is_bipolar);
+
+    assert!(has_aileron, "Must have aileron roll axis preset");
+    assert!(has_elevator, "Must have elevator pitch axis preset");
+    assert!(has_throttle, "Must have master throttle axis preset");
+    assert!(has_flaps, "Must have flaps axis preset");
 }
 
 #[test]
@@ -41,4 +53,10 @@ fn test_hardware_device_enumeration() {
         assert!(!dev.id.is_empty());
         assert!(!dev.inputs.is_empty(), "Device {} has no inputs", dev.name);
     }
+
+    // Verify virtual device has axes and axis ranges configured
+    let virt = devices.iter().find(|d| d.id == "virtual_flight_panel").unwrap();
+    assert!(!virt.axes.is_empty());
+    assert!(virt.axis_ranges.contains_key("SIM_THROTTLE_1"));
+    assert_eq!(virt.axis_ranges.get("SIM_THROTTLE_1"), Some(&(0, 16383)));
 }

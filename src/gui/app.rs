@@ -22,6 +22,15 @@ pub enum ActiveTab {
     Logs,
 }
 
+#[derive(Debug, Clone)]
+pub struct LiveAxisState {
+    pub raw: i32,
+    pub normalized: f64,
+    pub min: i32,
+    pub max: i32,
+    pub last_updated: Instant,
+}
+
 pub struct SpadLinxApp {
     // Channels
     cmd_tx: mpsc::UnboundedSender<GuiCommand>,
@@ -49,6 +58,7 @@ pub struct SpadLinxApp {
     last_input: Option<(String, String, String, Instant)>,
     discovered_lvars: Vec<String>,
     live_lvar_values: HashMap<String, f64>,
+    pub live_axes: HashMap<String, LiveAxisState>,
     logs: Vec<LogEntry>,
     auto_scroll_logs: bool,
 
@@ -91,6 +101,7 @@ impl SpadLinxApp {
             last_input: None,
             discovered_lvars: Vec::new(),
             live_lvar_values: HashMap::new(),
+            live_axes: HashMap::new(),
             logs: Vec::new(),
             auto_scroll_logs: true,
             mapping_state: MappingViewState::default(),
@@ -146,6 +157,18 @@ impl SpadLinxApp {
                 }
                 GuiEvent::InputTriggered { device, bound_to, action, time } => {
                     self.last_input = Some((device.clone(), bound_to.clone(), action.clone(), time));
+                }
+                GuiEvent::AxisMoved { device, bound_to, raw_value, normalized, min, max, time } => {
+                    let st = LiveAxisState {
+                        raw: raw_value,
+                        normalized,
+                        min,
+                        max,
+                        last_updated: time,
+                    };
+                    self.live_axes.insert(format!("{}:{}", device, bound_to), st.clone());
+                    self.live_axes.insert(bound_to.clone(), st);
+                    self.last_input = Some((device, bound_to, format!("{:.1}%", normalized * 100.0), time));
                 }
                 GuiEvent::LvarsDiscovered(lvars) => {
                     self.discovered_lvars = lvars;
@@ -207,7 +230,7 @@ impl eframe::App for SpadLinxApp {
         egui::TopBottomPanel::bottom("bottom_status_panel").show(ctx, |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("SPAD-LINX v0.1.0").color(Color32::from_rgb(140, 140, 180)).small());
+                ui.label(RichText::new("AeroDeck v0.1.0").color(Color32::from_rgb(140, 140, 180)).small());
                 ui.separator();
                 ui.label(RichText::new(format!("Aircraft: {}", self.aircraft_name)).color(Color32::from_rgb(0, 220, 255)).small());
                 ui.separator();
@@ -244,6 +267,7 @@ impl eframe::App for SpadLinxApp {
                         &self.last_input,
                         &self.discovered_lvars,
                         &self.devices,
+                        &self.live_axes,
                     );
                 }
                 ActiveTab::Lvars => {
@@ -284,8 +308,8 @@ impl eframe::App for SpadLinxApp {
 fn render_top_bar(app: &mut SpadLinxApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
         // App title
-        ui.heading(RichText::new("SPAD-LINX").color(Color32::from_rgb(0, 230, 255)).strong());
-        ui.label(RichText::new("Flight Controller & Profile Engine").color(Color32::GRAY));
+        ui.heading(RichText::new("AERODECK").color(Color32::from_rgb(0, 230, 255)).strong());
+        ui.label(RichText::new("Flight Controller & Telemetry Engine (SPAD.neXt Compatible)").color(Color32::GRAY));
 
         ui.separator();
 

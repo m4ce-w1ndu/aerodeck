@@ -90,6 +90,38 @@ pub static COMMON_CALCULATOR_CODES: &[(&str, &str)] = &[
 ];
 
 #[derive(Debug, Clone)]
+pub struct AxisPreset {
+    pub category: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub is_bipolar: bool, // true: -16383..16383 (pitch, roll, yaw), false: 0..16383 (throttle, brakes, flaps)
+}
+
+pub static SIMCONNECT_AXIS_PRESETS: &[AxisPreset] = &[
+    // Flight Controls
+    AxisPreset { category: "Flight Controls", name: "AXIS_AILERONS_SET", description: "Ailerons / Roll Axis", is_bipolar: true },
+    AxisPreset { category: "Flight Controls", name: "AXIS_ELEVATOR_SET", description: "Elevator / Pitch Axis", is_bipolar: true },
+    AxisPreset { category: "Flight Controls", name: "AXIS_RUDDER_SET", description: "Rudder / Yaw Axis", is_bipolar: true },
+    AxisPreset { category: "Flight Controls", name: "AXIS_ELEV_TRIM_SET", description: "Elevator Trim Wheel", is_bipolar: true },
+    AxisPreset { category: "Flight Controls", name: "AXIS_RUDDER_TRIM_SET", description: "Rudder Trim Axis", is_bipolar: true },
+
+    // Power & Throttles
+    AxisPreset { category: "Throttle & Engines", name: "AXIS_THROTTLE_SET", description: "Master Throttle (All Engines)", is_bipolar: false },
+    AxisPreset { category: "Throttle & Engines", name: "THROTTLE1_AXIS_SET_EX1", description: "Engine 1 Throttle Lever", is_bipolar: false },
+    AxisPreset { category: "Throttle & Engines", name: "THROTTLE2_AXIS_SET_EX1", description: "Engine 2 Throttle Lever", is_bipolar: false },
+    AxisPreset { category: "Throttle & Engines", name: "THROTTLE3_AXIS_SET_EX1", description: "Engine 3 Throttle Lever", is_bipolar: false },
+    AxisPreset { category: "Throttle & Engines", name: "THROTTLE4_AXIS_SET_EX1", description: "Engine 4 Throttle Lever", is_bipolar: false },
+    AxisPreset { category: "Throttle & Engines", name: "AXIS_PROPELLER_SET", description: "Propeller Pitch (All Engines)", is_bipolar: false },
+    AxisPreset { category: "Throttle & Engines", name: "AXIS_MIXTURE_SET", description: "Fuel Mixture (All Engines)", is_bipolar: false },
+
+    // Brakes & Secondary Controls
+    AxisPreset { category: "Flaps & Spoilers", name: "AXIS_FLAPS_SET", description: "Flaps Position Lever", is_bipolar: false },
+    AxisPreset { category: "Flaps & Spoilers", name: "AXIS_SPOILER_SET", description: "Speedbrake / Spoiler Lever", is_bipolar: false },
+    AxisPreset { category: "Brakes", name: "AXIS_LEFT_BRAKE_SET", description: "Left Toe Brake Pedal", is_bipolar: false },
+    AxisPreset { category: "Brakes", name: "AXIS_RIGHT_BRAKE_SET", description: "Right Toe Brake Pedal", is_bipolar: false },
+];
+
+#[derive(Debug, Clone)]
 pub struct DeviceDescriptor {
     pub id: &'static str,
     pub name: &'static str,

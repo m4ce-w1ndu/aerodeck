@@ -5,6 +5,7 @@ mod bridge;
 mod profile;
 mod hardware;
 mod proton;
+mod gui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -32,11 +33,20 @@ struct Cli {
     log_level: String,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Launch interactive graphical user interface (Default when no command specified)
+    Gui {
+        #[arg(short, long)]
+        profile: Option<PathBuf>,
+
+        #[arg(short, long, default_value = "127.0.0.1:45454")]
+        simconnect: String,
+    },
+
     /// Run SPAD.neXt profile with SimConnect and hardware controllers
     Run {
         #[arg(short, long)]
@@ -128,8 +138,7 @@ enum ProtonCommands {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let level = match cli.log_level.to_lowercase().as_str() {
@@ -145,12 +154,49 @@ async fn main() -> Result<()> {
         .finish();
     let _ = tracing::subscriber::set_global_default(subscriber);
 
+    match cli.command {
+        None => {
+            println!("{}", "=========================================================".bright_blue());
+            println!("{}", "      SPAD-LINX: Clean-room Flight Sim Hardware Bridge   ".bright_cyan().bold());
+            println!("{}", "      Cross-Platform SPAD.neXt Profile Engine for Linux  ".bright_cyan());
+            println!("{}", "=========================================================".bright_blue());
+            println!("Launching SPAD-LINX Interactive Graphical Interface...");
+            gui::run_gui(None, "127.0.0.1".to_string(), 45454)
+        }
+        Some(Commands::Gui { profile, simconnect }) => {
+            let (host, port) = parse_host_port(&simconnect);
+            println!("{}", "=========================================================".bright_blue());
+            println!("{}", "      SPAD-LINX: Clean-room Flight Sim Hardware Bridge   ".bright_cyan().bold());
+            println!("{}", "      Cross-Platform SPAD.neXt Profile Engine for Linux  ".bright_cyan());
+            println!("{}", "=========================================================".bright_blue());
+            println!("Launching SPAD-LINX Interactive Graphical Interface...");
+            gui::run_gui(profile, host, port)
+        }
+        Some(cmd) => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(run_cli_command(cmd))
+        }
+    }
+}
+
+fn parse_host_port(s: &str) -> (String, u16) {
+    if let Some((h, p)) = s.split_once(':') {
+        (h.to_string(), p.parse::<u16>().unwrap_or(45454))
+    } else {
+        (s.to_string(), 45454)
+    }
+}
+
+async fn run_cli_command(cmd: Commands) -> Result<()> {
     println!("{}", "=========================================================".bright_blue());
     println!("{}", "      SPAD-LINX: Clean-room Flight Sim Hardware Bridge   ".bright_cyan().bold());
     println!("{}", "      Cross-Platform SPAD.neXt Profile Engine for Linux  ".bright_cyan());
     println!("{}", "=========================================================".bright_blue());
 
-    match cli.command {
+    match cmd {
+        Commands::Gui { .. } => unreachable!(),
         Commands::Run { profile, simconnect } => {
             info!("Loading SPAD.neXt profile from {:?}", profile);
             let prof = ProfileParser::parse_file(&profile)?;

@@ -102,20 +102,54 @@ Because both Steam Proton and native Linux share the Linux network namespace (`l
 
 ---
 
-## 5. Usage & CLI Reference
+## 5. Usage & Interactive GUI
 
-### 5.1 Build
+### 5.1 Interactive Graphical Interface (GUI)
+`spad-linx` features a complete, high-performance immediate-mode GUI built with `egui` and `eframe`, designed specifically to provide the intuitive mapping and monitoring experience of SPAD.neXt on Linux and Windows.
+
+To launch the GUI:
+```bash
+# Launch GUI directly (default action)
+./target/release/spad-linx
+# or explicitly
+./target/release/spad-linx gui --profile ./default_c172.xml
+```
+
+#### GUI Capabilities:
+- **Real-Time Hardware Input Monitor**:
+  - Live feedback banner highlights incoming controller signals as soon as you toggle a switch, press a button, or turn an encoder.
+  - **Auto-Select Active Hardware Input**: Flipping a physical switch on your desk immediately focuses that input in the mapping tree.
+- **Intuitive Controller Mapping Editor**:
+  - Browse inputs across Saitek Multi Panel, Radio Panel, Switch Panel, BIP, and Virtual Controllers.
+  - Create, test, and delete bindings directly from the UI.
+  - Choose from **50+ Pre-Configured SimConnect Events** (Autopilot, Radios, Lights, Systems, Engines, Flight Controls) or enter custom events.
+  - Bind to **MSFS LVARs** with live discovery dropdowns and write values.
+  - Execute **RPN Calculator Scripts** with pre-built templates.
+  - Attach execution **Conditions** (e.g., `Target == Value`, `<`, `>`).
+  - **"Test Action in Simulator"**: Fire bindings instantly into MSFS to verify them live.
+- **MSFS WASM LVAR Explorer**:
+  - Live searchable table of all variables discovered in the running aircraft with real-time value updates.
+  - Direct variable writing and interactive RPN calculator console.
+- **Interactive Virtual Flight Panel Simulation**:
+  - On-screen visual mockups of the Switch Panel, Multi Panel (with 7-segment digital displays), and Radio Panel.
+  - Click switches and turn dials on screen to test mappings even without hardware plugged in.
+- **One-Click Steam Proton Setup**:
+  - Automatically locates your MSFS 2020 Steam Proton prefix and configures `SimConnect.xml`.
+- **Live Event Log**:
+  - Real-time scrolling diagnostics of hardware HID reports, SimConnect transactions, and profile executions.
+
+### 5.2 Build
 ```bash
 cargo build --release
 ```
 
-### 5.2 Auto-Configure Steam Proton
+### 5.3 Auto-Configure Steam Proton (CLI)
 Automatically finds your MSFS Steam Proton prefix and installs the `SimConnect.xml` network bridge:
 ```bash
 ./target/release/spad-linx proton setup
 ```
 
-### 5.3 Profile Inspection & Generation
+### 5.4 Profile Inspection & Generation
 Inspect an existing SPAD.neXt profile:
 ```bash
 ./target/release/spad-linx profile inspect --path my_profile.xml

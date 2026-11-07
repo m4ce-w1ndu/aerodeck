@@ -46,6 +46,23 @@ impl ProfileExecutor {
         &self.profile
     }
 
+    /// Handles a DeviceEvent directly
+    pub async fn handle_device_event(&self, device_id: &str, event: &crate::hardware::device::DeviceEvent) -> Result<bool> {
+        use crate::hardware::device::DeviceEvent;
+        match event {
+            DeviceEvent::ButtonPress { bound_to } => self.dispatch_event(device_id, bound_to, "PRESS").await,
+            DeviceEvent::ButtonRelease { bound_to } => self.dispatch_event(device_id, bound_to, "RELEASE").await,
+            DeviceEvent::RotaryTurn { bound_to, clockwise } => {
+                let trg = if *clockwise { "CLOCKWISE" } else { "COUNTER_CLOCKWISE" };
+                self.dispatch_event(device_id, bound_to, trg).await
+            }
+            DeviceEvent::SwitchChange { bound_to, state } => {
+                let trg = if *state { "ON" } else { "OFF" };
+                self.dispatch_event(device_id, bound_to, trg).await
+            }
+        }
+    }
+
     /// Triggers an input event from a hardware device (e.g. bound_to: "AP_BUTTON", trigger: "PRESSED")
     pub async fn dispatch_event(&self, device_id: &str, bound_to: &str, trigger: &str) -> Result<bool> {
         debug!("Dispatching event on device '{}': bound_to='{}', trigger='{}'", device_id, bound_to, trigger);

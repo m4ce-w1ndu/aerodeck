@@ -18,6 +18,9 @@ hidapi = { version = "2.6", optional = true }
 regex = "1.10"
 colored = "2.1"
 futures = "0.3"
+eframe = { version = "0.30", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+egui = "0.30"
+
 
 [features]
 default = ["hardware"]

@@ -85,4 +85,21 @@ impl ProtonConfigurator {
         info!("Installed network SimConnect.xml configured on port {} to {:?}", port, dest);
         Ok(dest)
     }
+
+    /// Finds MSFS AppData Roaming path, checking custom prefix or auto-detected Proton prefixes
+    pub fn find_msfs_roaming_path(custom_prefix: Option<PathBuf>) -> Option<PathBuf> {
+        if let Some(pfx) = custom_prefix {
+            Self::find_appdata_dir(&pfx)
+        } else {
+            let pfx = Self::find_msfs_proton_prefix()?;
+            Self::find_appdata_dir(&pfx)
+        }
+    }
+
+    /// Configures SimConnect.xml directly
+    pub fn configure_simconnect(custom_prefix: Option<PathBuf>, port: u16) -> Result<PathBuf> {
+        let roaming = Self::find_msfs_roaming_path(custom_prefix)
+            .ok_or_else(|| anyhow::anyhow!("MSFS AppData Roaming directory not found in Proton prefix"))?;
+        Self::install_simconnect_xml(&roaming, port)
+    }
 }

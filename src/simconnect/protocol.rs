@@ -8,6 +8,10 @@ pub const SIMCONNECT_OBJECT_ID_USER: u32 = 0;
 #[repr(u32)]
 pub enum SimConnectSendId {
     Open = 1,
+    MapClientEventToSimEvent = 4,
+    TransmitClientEvent = 5,
+    SetDataOnSimObject = 16,
+    RequestDataOnSimObject = 14,
     SubscribeToSystemEvent = 23,
     UnsubscribeFromSystemEvent = 24,
     RequestSystemState = 53,
@@ -18,9 +22,6 @@ pub enum SimConnectSendId {
     ClearClientDataDefinition = 58,
     RequestClientData = 59,
     SetClientData = 60,
-    TransmitClientEvent = 68,
-    SetDataOnSimObject = 16,
-    RequestDataOnSimObject = 14,
     Unknown = 9999,
 }
 

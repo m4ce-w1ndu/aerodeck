@@ -207,6 +207,14 @@ impl SimConnectClient {
         self.send_raw(&builder.build()).await
     }
 
+    pub async fn map_client_event_to_sim_event(&self, event_id: u32, sim_event_name: &str) -> Result<()> {
+        let seq = self.next_seq();
+        let mut builder = SendPacketBuilder::new(SimConnectSendId::MapClientEventToSimEvent, seq);
+        builder.write_u32(event_id);
+        builder.write_fixed_string(sim_event_name, 256);
+        self.send_raw(&builder.build()).await
+    }
+
     pub async fn transmit_client_event(&self, obj_id: u32, event_id: u32, data: u32) -> Result<()> {
         let seq = self.next_seq();
         let mut builder = SendPacketBuilder::new(SimConnectSendId::TransmitClientEvent, seq);

@@ -190,6 +190,14 @@ impl SpadLvarBridge {
         self.known_lvars.lock().await.clone()
     }
 
+    pub async fn lvar_count(&self) -> usize {
+        self.known_lvars.lock().await.len()
+    }
+
+    pub async fn get_lvar_values(&self) -> HashMap<String, f64> {
+        self.lvar_values.lock().await.clone()
+    }
+
     pub async fn get_active_aircraft(&self) -> String {
         self.aircraft_name.lock().await.clone()
     }

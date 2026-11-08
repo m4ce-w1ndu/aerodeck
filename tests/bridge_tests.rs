@@ -61,3 +61,18 @@ fn test_vardump_parsing() {
     assert_eq!(dump.variable_names[1], "A32NX_FMA_EXPEDITE_MODE");
     assert_eq!(dump.variable_names[2], "A32NX_EFIS_L_ND_RANGE");
 }
+
+#[test]
+fn test_add_to_client_data_definition_wire_size() {
+    use aerodeck::simconnect::{SendPacketBuilder, SimConnectSendId};
+    let mut builder = SendPacketBuilder::new(SimConnectSendId::AddToClientDataDefinition, 1);
+    builder.write_u32(1);
+    builder.write_u32(0);
+    builder.write_u32(276);
+    builder.write_f32(0.0);
+    builder.write_u32(0xFFFF_FFFF);
+    let bytes = builder.build();
+    assert_eq!(bytes.len(), 36, "AddToClientDataDefinition must be exactly 36 bytes (16-byte header + 20-byte body)");
+    assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), 36);
+    assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 0xF000_0000 | 57);
+}

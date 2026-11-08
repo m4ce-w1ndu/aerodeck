@@ -192,8 +192,8 @@ impl SimConnectClient {
         builder.write_u32(def_id);
         builder.write_u32(offset);
         builder.write_u32(size);
-        builder.write_f64(0.0); // epsilon
-        builder.write_u32(0); // datum_id
+        builder.write_f32(0.0); // fEpsilon (4-byte float)
+        builder.write_u32(0xFFFF_FFFF); // datum_id: SIMCONNECT_UNUSED
         self.send_raw(&builder.build()).await
     }
 

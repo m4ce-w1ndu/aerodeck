@@ -298,6 +298,10 @@ impl SendPacketBuilder {
         self.body.write_u32::<LittleEndian>(val).unwrap();
     }
 
+    pub fn write_f32(&mut self, val: f32) {
+        self.body.write_f32::<LittleEndian>(val).unwrap();
+    }
+
     pub fn write_f64(&mut self, val: f64) {
         self.body.write_f64::<LittleEndian>(val).unwrap();
     }

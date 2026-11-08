@@ -175,6 +175,51 @@ impl AircraftAssignmentManager {
         }
     }
 
+    /// Binds multiple aircraft titles to a profile path in a single batch
+    pub fn assign_aircrafts(&mut self, aircraft_titles: &[String], profile_path: &str) -> Result<()> {
+        let clean_profile = profile_path.trim().to_string();
+        for ac in aircraft_titles {
+            let clean_title = ac.trim().to_string();
+            if !clean_title.is_empty() {
+                self.assignments.insert(clean_title, clean_profile.clone());
+            }
+        }
+        self.save()?;
+
+        // Also persist inside the XML profile's <AssignedAircrafts> tag if the file exists
+        let p = Path::new(&clean_profile);
+        if p.exists() {
+            if let Ok(mut prof) = ProfileParser::parse_file(p) {
+                let mut list = prof.assigned_aircrafts.unwrap_or_default();
+                for ac in aircraft_titles {
+                    let clean_title = ac.trim();
+                    if !clean_title.is_empty()
+                        && !list.items.iter().any(|a| a.name.eq_ignore_ascii_case(clean_title))
+                    {
+                        list.items.push(AssignedAircraftEntry {
+                            name: clean_title.to_string(),
+                        });
+                    }
+                }
+                prof.assigned_aircrafts = Some(list);
+                if let Ok(xml) = quick_xml::se::to_string_with_root("Profile", &prof) {
+                    let full = format!("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n{}", xml);
+                    let _ = fs::write(p, full);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Removes bindings for multiple aircraft titles in a single batch
+    pub fn unassign_aircrafts(&mut self, aircraft_titles: &[String]) -> Result<()> {
+        for ac in aircraft_titles {
+            let _ = self.unassign_aircraft(ac);
+        }
+        Ok(())
+    }
+
     /// Binds an aircraft title to a profile path and updates both `aircraft_assignments.json` and the profile XML
     pub fn assign_aircraft(&mut self, aircraft_title: &str, profile_path: &str) -> Result<()> {
         let clean_title = aircraft_title.trim().to_string();

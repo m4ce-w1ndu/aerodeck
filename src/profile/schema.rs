@@ -821,4 +821,141 @@ impl SpadProfile {
         }
         devs.items = consolidated;
     }
+
+    /// Checks if this profile matches an aircraft title reported by MSFS
+    pub fn matches_aircraft_title(&self, sim_title: &str) -> bool {
+        let sim_clean = sim_title.trim();
+        if sim_clean.is_empty() {
+            return false;
+        }
+        if let Some(ref assigned) = self.assigned_aircrafts {
+            let sim_lower = sim_clean.to_lowercase();
+            for item in &assigned.items {
+                let pat = item.name.trim().to_lowercase();
+                if pat.is_empty() {
+                    continue;
+                }
+                if pat == "*" || pat == sim_lower {
+                    return true;
+                }
+                if pat.contains('*') {
+                    let parts: Vec<&str> = pat.split('*').collect();
+                    if parts.len() == 2 {
+                        let (prefix, suffix) = (parts[0], parts[1]);
+                        if sim_lower.starts_with(prefix) && sim_lower.ends_with(suffix) {
+                            return true;
+                        }
+                    }
+                }
+                if sim_lower.contains(&pat) || pat.contains(&sim_lower) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Returns true if this profile is configured as a fallback profile (has '*' pattern)
+    pub fn is_fallback_profile(&self) -> bool {
+        self.aircraft_patterns().iter().any(|p| p.trim() == "*")
+    }
+
+    /// Sets whether this profile acts as a generic fallback profile
+    pub fn set_fallback_profile(&mut self, fallback: bool) {
+        if fallback {
+            self.add_aircraft_pattern("*");
+        } else {
+            self.remove_aircraft_pattern("*");
+        }
+    }
+
+    /// Returns list of aircraft patterns assigned to this profile
+    pub fn aircraft_patterns(&self) -> Vec<String> {
+        self.assigned_aircrafts
+            .as_ref()
+            .map(|l| l.items.iter().map(|a| a.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Adds an aircraft pattern to this profile
+    pub fn add_aircraft_pattern(&mut self, pattern: &str) {
+        let clean = pattern.trim().to_string();
+        if clean.is_empty() {
+            return;
+        }
+        let list = self
+            .assigned_aircrafts
+            .get_or_insert_with(|| AssignedAircraftsList { items: Vec::new() });
+        if !list.items.iter().any(|a| a.name.eq_ignore_ascii_case(&clean)) {
+            list.items.push(AssignedAircraftEntry { name: clean });
+        }
+    }
+
+    /// Removes an aircraft pattern from this profile
+    pub fn remove_aircraft_pattern(&mut self, pattern: &str) {
+        if let Some(ref mut list) = self.assigned_aircrafts {
+            list.items.retain(|a| !a.name.eq_ignore_ascii_case(pattern.trim()));
+            if list.items.is_empty() {
+                self.assigned_aircrafts = None;
+            }
+        }
+    }
+
+    /// Replaces the layout of a specific device inside this profile with a new layout (one-time copy).
+    /// Returns the previous DeviceProfile for one-step undo.
+    pub fn replace_device_layout(
+        &mut self,
+        vendor_id: u16,
+        product_id: u16,
+        mut new_layout: DeviceProfile,
+    ) -> Option<DeviceProfile> {
+        let devs = self.devices.get_or_insert_with(|| DeviceList { items: Vec::new() });
+        let prev_idx = devs.items.iter().position(|d| d.matches_vid_pid(vendor_id, product_id));
+        let prev = prev_idx.map(|idx| devs.items.remove(idx));
+
+        new_layout.vendor_id = Some(format!("0x{:04X}", vendor_id));
+        new_layout.product_id = Some(format!("0x{:04X}", product_id));
+        devs.items.push(new_layout);
+        prev
+    }
+
+    /// Clears all bindings for a specific device, keeping the device entry with an empty page
+    pub fn clear_device_layout(&mut self, vendor_id: u16, product_id: u16) -> Option<DeviceProfile> {
+        let devs = self.devices.as_mut()?;
+        let d = devs.items.iter_mut().find(|d| d.matches_vid_pid(vendor_id, product_id))?;
+        let prev = d.clone();
+        for page in &mut d.pages {
+            page.events = Some(EventList { items: Vec::new() });
+        }
+        Some(prev)
+    }
+
+    /// Removes a device from this profile entirely
+    pub fn remove_device(&mut self, vendor_id: u16, product_id: u16) -> Option<DeviceProfile> {
+        let devs = self.devices.as_mut()?;
+        let idx = devs.items.iter().position(|d| d.matches_vid_pid(vendor_id, product_id))?;
+        Some(devs.items.remove(idx))
+    }
+
+    /// Ensures a device entry exists in this profile for the given hardware controller
+    pub fn add_device_for_hardware(&mut self, vendor_id: u16, product_id: u16, name: &str) {
+        let devs = self.devices.get_or_insert_with(|| DeviceList { items: Vec::new() });
+        if !devs.items.iter().any(|d| d.matches_vid_pid(vendor_id, product_id)) {
+            devs.items.push(DeviceProfile {
+                vendor_id: Some(format!("0x{:04X}", vendor_id)),
+                product_id: Some(format!("0x{:04X}", product_id)),
+                device_path: None,
+                serial: None,
+                device_index: Some(0),
+                name: Some(name.to_string()),
+                id: Some(format!("DEV_{:04X}_{:04X}", vendor_id, product_id)),
+                pages: vec![DevicePage {
+                    id: Some("Default".to_string()),
+                    is_default: Some(true),
+                    name: Some("Default".to_string()),
+                    events: Some(EventList { items: Vec::new() }),
+                }],
+            });
+        }
+    }
 }

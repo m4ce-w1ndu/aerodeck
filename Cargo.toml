@@ -3,6 +3,10 @@ name = "aerodeck"
 version = "0.1.0"
 edition = "2021"
 description = "AeroDeck: High-performance flight simulator hardware engine & controller bridge (SPAD.neXt profile compatible)"
+authors = ["Simone Rolando"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/m4ce-w1ndu/aerodeck"
+readme = "README.md"
 
 [dependencies]
 tokio = { version = "1.40", features = ["full"] }

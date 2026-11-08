@@ -12,11 +12,42 @@ impl ProfileParser {
         let content = fs::read_to_string(p)
             .with_context(|| format!("Failed to read profile file at {:?}", p))?;
         let mut prof = Self::parse_str(&content)?;
+        let mut needs_migration = false;
+
         if prof.name.as_deref().unwrap_or("").trim().is_empty() {
             if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
                 prof.name = Some(stem.replace('_', " "));
+                needs_migration = true;
             }
         }
+
+        if prof.version.is_none() {
+            prof.version = Some(2);
+            needs_migration = true;
+        }
+
+        if let Some(ref mut devs) = prof.devices {
+            for dev in &mut devs.items {
+                if dev.pages.is_empty() {
+                    dev.pages.push(super::schema::DevicePage {
+                        id: Some("Default".to_string()),
+                        is_default: Some(true),
+                        name: Some("Default".to_string()),
+                        events: Some(super::schema::EventList { items: Vec::new() }),
+                    });
+                    needs_migration = true;
+                }
+            }
+        }
+
+        // If migration upgraded an older file, create a .bak backup if not already present
+        if needs_migration {
+            let bak_path = p.with_extension("xml.bak");
+            if !bak_path.exists() {
+                let _ = fs::copy(p, &bak_path);
+            }
+        }
+
         Ok(prof)
     }
 

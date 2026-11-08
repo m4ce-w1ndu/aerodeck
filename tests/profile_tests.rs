@@ -217,4 +217,146 @@ fn test_multi_device_profile_merge_and_roundtrip() {
     assert_eq!(reparsed.devices.as_ref().unwrap().items.len(), 2);
 }
 
+#[test]
+fn test_aircraft_pattern_matching_and_editing() {
+    let mut profile = SpadProfile {
+        version: Some(2),
+        is_stock_profile: Some(false),
+        name: Some("PMDG 737 Profile".to_string()),
+        variables: None,
+        options: None,
+        assigned_aircrafts: None,
+        devices: None,
+        profile_info: None,
+    };
+
+    assert!(!profile.matches_aircraft_title("PMDG 737-700 Air Canada"));
+
+    // Add exact pattern
+    profile.add_aircraft_pattern("PMDG 737-700*");
+    assert!(profile.matches_aircraft_title("PMDG 737-700 Air Canada"));
+    assert!(profile.matches_aircraft_title("PMDG 737-700 Southwest"));
+    assert!(!profile.matches_aircraft_title("Fenix A320"));
+
+    // Add wildcard
+    profile.add_aircraft_pattern("B737");
+    assert!(profile.matches_aircraft_title("Boeing B737 NG"));
+
+    assert_eq!(profile.aircraft_patterns().len(), 2);
+
+    // Remove pattern
+    profile.remove_aircraft_pattern("B737");
+    assert_eq!(profile.aircraft_patterns().len(), 1);
+    assert!(!profile.matches_aircraft_title("Boeing B737 NG"));
+    assert!(profile.matches_aircraft_title("PMDG 737-700"));
+}
+
+#[test]
+fn test_per_device_layout_replacement_and_undo() {
+    let mut profile = SpadProfile {
+        version: Some(2),
+        is_stock_profile: Some(false),
+        name: Some("A320 Combined".to_string()),
+        variables: None,
+        options: None,
+        assigned_aircrafts: None,
+        devices: None,
+        profile_info: None,
+    };
+
+    // Add two devices
+    profile.add_device_for_hardware(0x4098, 0xBC27, "Winwing Stick");
+    profile.add_device_for_hardware(0x044F, 0x0407, "TCA Throttle");
+
+    let devs = profile.devices.as_ref().unwrap();
+    assert_eq!(devs.items.len(), 2);
+
+    // Create a new layout for TCA Throttle with 1 event
+    let new_tca_layout = DeviceProfile {
+        vendor_id: Some("0x044F".to_string()),
+        product_id: Some("0x0407".to_string()),
+        device_path: None,
+        serial: None,
+        device_index: Some(0),
+        name: Some("TCA Throttle".to_string()),
+        id: Some("DEV_044F_0407".to_string()),
+        pages: vec![DevicePage {
+            id: Some("Default".to_string()),
+            is_default: Some(true),
+            name: Some("Default".to_string()),
+            events: Some(EventList {
+                items: vec![SpadEvent {
+                    bound_to: "THROTTLE_AXIS".to_string(),
+                    config_id: None,
+                    event_definitions: Some(EventDefinitionsList {
+                        items: vec![EventDefinition {
+                            trigger: Some("VALUE".to_string()),
+                            priority: None,
+                            is_final: None,
+                            condition_binding: None,
+                            conditions: None,
+                            actions: Some(EventActionsList {
+                                items: vec![EventActionItem::Control(EventActionControl {
+                                    target: "SIMCONNECT:AXIS_THROTTLE_SET".to_string(),
+                                    value: None,
+                                })],
+                            }),
+                        }],
+                    }),
+                }],
+            }),
+        }],
+    };
+
+    // Replace device layout for TCA Throttle
+    let prev = profile
+        .replace_device_layout(0x044F, 0x0407, new_tca_layout)
+        .expect("Should return previous layout");
+
+    // The other device (Winwing Stick) must NOT be touched
+    let stick = profile.find_device_for_connected(0x4098, 0xBC27, "").unwrap();
+    assert_eq!(stick.name.as_deref(), Some("Winwing Stick"));
+
+    // TCA now has the new throttle event
+    let tca = profile.find_device_for_connected(0x044F, 0x0407, "").unwrap();
+    assert_eq!(tca.mapped_input_count(), 1);
+
+    // Test One-Step Undo: restore previous layout
+    profile.replace_device_layout(0x044F, 0x0407, prev);
+    let restored_tca = profile.find_device_for_connected(0x044F, 0x0407, "").unwrap();
+    assert_eq!(restored_tca.mapped_input_count(), 0);
+
+    // Test Clear Layout
+    profile.clear_device_layout(0x4098, 0xBC27);
+    let stick_after = profile.find_device_for_connected(0x4098, 0xBC27, "").unwrap();
+    assert_eq!(stick_after.mapped_input_count(), 0);
+}
+
+#[test]
+fn test_legacy_profile_migration_and_backup() {
+    let dir = std::env::temp_dir().join("aerodeck_migr_test");
+    let _ = std::fs::create_dir_all(&dir);
+    let old_xml_path = dir.join("legacy_cessna.xml");
+    let bak_path = dir.join("legacy_cessna.xml.bak");
+    let _ = std::fs::remove_file(&bak_path);
+
+    // Legacy file without Version and without Name and without Pages
+    let legacy_xml = r#"<Profile><Devices><Device VendorID="0x06A3" ProductID="0x0D06" Name="Saitek Multi"></Device></Devices></Profile>"#;
+    std::fs::write(&old_xml_path, legacy_xml).unwrap();
+
+    let prof = ProfileParser::parse_file(&old_xml_path).expect("Must parse and migrate legacy file");
+    assert_eq!(prof.version, Some(2));
+    assert_eq!(prof.name.as_deref(), Some("legacy cessna"));
+    let dev = &prof.devices.as_ref().unwrap().items[0];
+    assert_eq!(dev.pages.len(), 1);
+    assert_eq!(dev.pages[0].name.as_deref(), Some("Default"));
+
+    // Verify .bak file was created
+    assert!(bak_path.exists(), "Backup .bak file should be created during migration");
+
+    let _ = std::fs::remove_file(&old_xml_path);
+    let _ = std::fs::remove_file(&bak_path);
+}
+
+
 

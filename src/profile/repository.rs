@@ -468,7 +468,7 @@ impl ProfileRepository {
         }
 
         // Sort by download count descending
-        results.sort_by(|a, b| b.dlcount.cmp(&a.dlcount));
+        results.sort_by_key(|a| std::cmp::Reverse(a.dlcount));
         Ok(results)
     }
 
@@ -640,7 +640,7 @@ impl ProfileRepository {
             }
         }
 
-        entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        entries.sort_by_key(|a| a.name.to_lowercase());
         entries
     }
 
@@ -1763,7 +1763,7 @@ fn unescape_xml_entities(input: &str) -> String {
 
 fn base64_encode(data: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
@@ -1820,6 +1820,7 @@ fn md5_lower_hex(input: &[u8]) -> String {
     }
     msg.extend_from_slice(&bit_len.to_le_bytes());
 
+    #[allow(clippy::chunks_exact_to_as_chunks)]
     for chunk in msg.chunks_exact(64) {
         let mut m = [0u32; 16];
         for (i, word) in chunk.chunks_exact(4).enumerate() {

@@ -188,3 +188,17 @@ cargo build --release
 cargo test
 ```
 All tests pass with 100% verification.
+
+---
+
+## 7. License & Attribution
+
+- **Author**: Simone Rolando
+- **Repository**: [https://github.com/m4ce-w1ndu/aerodeck](https://github.com/m4ce-w1ndu/aerodeck)
+- **License**: Dual-licensed under either of:
+  - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+  - MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+### Third-Party Disclaimer
+AeroDeck is an independent open-source project and is not affiliated with, authorized, maintained, sponsored, or endorsed by Microsoft Corporation, Asobo Studio, Lockheed Martin, Laminar Research, or SPAD.neXt. All product names, logos, and brands are property of their respective owners.
+

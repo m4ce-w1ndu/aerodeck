@@ -77,7 +77,9 @@ pub enum GuiCommand {
     RescanDevices,
     RescanAircrafts { custom_prefix: Option<PathBuf> },
     BindAircraftToProfile { aircraft_title: String, profile_path: String },
+    BindAircraftsToProfile { aircraft_titles: Vec<String>, profile_path: String },
     UnbindAircraft { aircraft_title: String },
+    UnbindAircrafts { aircraft_titles: Vec<String> },
     SetDefaultProfile(Option<String>),
     SetAutoSwitchProfile(bool),
     SimulateAircraftSwitch(String),
@@ -460,6 +462,19 @@ async fn run_backend_loop(
                             text: format!("Bound aircraft '{}' -> profile '{}'", aircraft_title, profile_path),
                         });
                     }
+                    Some(GuiCommand::BindAircraftsToProfile { aircraft_titles, profile_path }) => {
+                        let count = aircraft_titles.len();
+                        let _ = assignments.assign_aircrafts(&aircraft_titles, &profile_path);
+                        let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
+                            aircrafts: discovered_aircrafts.clone(),
+                            assignments: assignments.clone(),
+                        });
+                        let _ = event_tx.send(GuiEvent::Log {
+                            timestamp: chrono_now(),
+                            level: "INFO".to_string(),
+                            text: format!("Bound {} aircraft -> profile '{}'", count, profile_path),
+                        });
+                    }
                     Some(GuiCommand::UnbindAircraft { aircraft_title }) => {
                         let _ = assignments.unassign_aircraft(&aircraft_title);
                         let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
@@ -470,6 +485,19 @@ async fn run_backend_loop(
                             timestamp: chrono_now(),
                             level: "INFO".to_string(),
                             text: format!("Unbound aircraft '{}'", aircraft_title),
+                        });
+                    }
+                    Some(GuiCommand::UnbindAircrafts { aircraft_titles }) => {
+                        let count = aircraft_titles.len();
+                        let _ = assignments.unassign_aircrafts(&aircraft_titles);
+                        let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
+                            aircrafts: discovered_aircrafts.clone(),
+                            assignments: assignments.clone(),
+                        });
+                        let _ = event_tx.send(GuiEvent::Log {
+                            timestamp: chrono_now(),
+                            level: "INFO".to_string(),
+                            text: format!("Unbound {} aircraft", count),
                         });
                     }
                     Some(GuiCommand::SetDefaultProfile(def_prof)) => {
@@ -850,7 +878,7 @@ async fn run_backend_loop(
                     Some(GuiCommand::SaveProfile(path)) => {
                         if let Some(ref prof) = active_profile {
                             let prof_guard = prof.lock().await;
-                            match ProfileParser::save_file(&path, &*prof_guard) {
+                            match ProfileParser::save_file(&path, &prof_guard) {
                                 Ok(()) => {
                                     let _ = event_tx.send(GuiEvent::ProfileSaved {
                                         path: path.to_string_lossy().to_string(),
@@ -869,7 +897,7 @@ async fn run_backend_loop(
                 tick_counter = tick_counter.wrapping_add(1);
 
                 // Unattended background auto-connect when FlightSimulator.exe is detected
-                if simconnect.is_none() && !user_disconnected && tick_counter % 6 == 0 {
+                if simconnect.is_none() && !user_disconnected && tick_counter.is_multiple_of(6) {
                     let live_ports = crate::proton::ProtonConfigurator::discover_live_msfs_tcp_ports();
                     if let Some(&port) = live_ports.first() {
                         let addr = format!("127.0.0.1:{}", port);
@@ -1163,16 +1191,35 @@ async fn apply_imported_or_merged_profile(
         });
     }
 
-    if let Some(ref ac_title) = bind_to_aircraft {
-        let _ = assignments.assign_aircraft(ac_title, &final_path_str);
-        let _ = event_tx.send(GuiEvent::Log {
-            timestamp: chrono_now(),
-            level: "INFO".to_string(),
-            text: format!(
-                "Bound aircraft '{}' -> multi-device profile '{}' ({})",
-                ac_title, final_prof_name, final_path_str
-            ),
-        });
+    if let Some(ref ac_spec) = bind_to_aircraft {
+        let ac_titles: Vec<String> = ac_spec
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if ac_titles.len() == 1 {
+            let _ = assignments.assign_aircraft(&ac_titles[0], &final_path_str);
+            let _ = event_tx.send(GuiEvent::Log {
+                timestamp: chrono_now(),
+                level: "INFO".to_string(),
+                text: format!(
+                    "Bound aircraft '{}' -> multi-device profile '{}' ({})",
+                    ac_titles[0], final_prof_name, final_path_str
+                ),
+            });
+        } else if !ac_titles.is_empty() {
+            let _ = assignments.assign_aircrafts(&ac_titles, &final_path_str);
+            let _ = event_tx.send(GuiEvent::Log {
+                timestamp: chrono_now(),
+                level: "INFO".to_string(),
+                text: format!(
+                    "Bound {} aircraft -> multi-device profile '{}' ({})",
+                    ac_titles.len(),
+                    final_prof_name,
+                    final_path_str
+                ),
+            });
+        }
     } else {
         assignments.import_from_xml_profiles();
     }

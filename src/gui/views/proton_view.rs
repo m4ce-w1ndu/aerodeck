@@ -245,10 +245,10 @@ pub fn render_proton_view(
                 }
             }
 
-            if *app_simconnect_port != state.port {
-                if ui.button(format!("Sync Top Bar to Port {}", state.port)).clicked() {
-                    *app_simconnect_port = state.port;
-                }
+            if *app_simconnect_port != state.port
+                && ui.button(format!("Sync Top Bar to Port {}", state.port)).clicked()
+            {
+                *app_simconnect_port = state.port;
             }
         });
 

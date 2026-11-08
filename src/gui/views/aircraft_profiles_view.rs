@@ -5,8 +5,8 @@ use tokio::sync::mpsc;
 use crate::gui::backend::GuiCommand;
 use crate::hardware::enumerator::ConnectedDevice;
 use crate::profile::{
-    AircraftAssignmentManager, DiscoveredAircraft, ProfileRepository, RepositoryProfileEntry,
-    EXTRACTED_USB_DEVICES,
+    AircraftAssignmentManager, DiscoveredAircraft, OnlineSpadProfileEntry, ProfileRepository,
+    RepositoryProfileEntry, SpadAccountConfig, WindowsSpadProfileEntry, EXTRACTED_USB_DEVICES,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,46 +17,75 @@ pub enum AircraftFilterMode {
     CommunityOnly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepositorySourceTab {
+    OnlineSpadRepository,
+    WindowsSpadBackup,
+    BuiltinVerified,
+}
+
 pub struct AircraftProfilesViewState {
     pub aircraft_search: String,
     pub aircraft_filter_mode: AircraftFilterMode,
     pub selected_aircraft_title: Option<String>,
     pub selected_profile_to_bind: String,
 
-    // Repository filter state
+    // Right pane source tab
+    pub active_repo_tab: RepositorySourceTab,
+
+    // SPAD.neXt Account & Automatic X-Token config
+    pub spad_account: SpadAccountConfig,
+    pub show_account_editor: bool,
+    pub is_fetching_online: bool,
+
+    // Online SPAD.neXt catalog & filters
+    pub online_catalog: Vec<OnlineSpadProfileEntry>,
+    pub online_search: String,
+    pub online_device_filter: String,
+    pub online_match_my_devices: bool,
+
+    // Windows SPAD.neXt profiles discovered on disk
+    pub windows_profiles: Vec<WindowsSpadProfileEntry>,
+
+    // Built-in Repository filter state
     pub match_connected_hardware_only: bool,
     pub repo_device_filter: String,
     pub repo_category_filter: String,
     pub repo_search: String,
 
-    // Online SOAP & Direct URL state
+    // Direct URL state
     pub direct_url_input: String,
     pub direct_url_save_name: String,
-    pub soap_search_query: String,
-    pub soap_vid_input: String,
-    pub soap_pid_input: String,
-    pub soap_token_input: String,
     pub online_soap_response: String,
     pub status_banner: Option<(String, bool)>,
 }
 
 impl Default for AircraftProfilesViewState {
     fn default() -> Self {
+        let spad_account = SpadAccountConfig::load_or_autodiscover();
+        let windows_profiles = ProfileRepository::discover_windows_spad_profiles(Some(
+            &spad_account.windows_spad_dir,
+        ));
         Self {
             aircraft_search: String::new(),
             aircraft_filter_mode: AircraftFilterMode::All,
             selected_aircraft_title: None,
-            selected_profile_to_bind: "profiles/airbus_a320_winwing_tca.xml".to_string(),
+            selected_profile_to_bind: "profiles/Fenix A320.xml".to_string(),
+            active_repo_tab: RepositorySourceTab::OnlineSpadRepository,
+            spad_account,
+            show_account_editor: false,
+            is_fetching_online: true,
+            online_catalog: Vec::new(),
+            online_search: String::new(),
+            online_device_filter: "All".to_string(),
+            online_match_my_devices: false,
+            windows_profiles,
             match_connected_hardware_only: true,
             repo_device_filter: "All".to_string(),
             repo_category_filter: "All".to_string(),
             repo_search: String::new(),
             direct_url_input: String::new(),
             direct_url_save_name: "downloaded_profile.xml".to_string(),
-            soap_search_query: "A320".to_string(),
-            soap_vid_input: "0x4098".to_string(),
-            soap_pid_input: "0xBC27".to_string(),
-            soap_token_input: String::new(),
             online_soap_response: String::new(),
             status_banner: None,
         }
@@ -554,347 +583,934 @@ fn render_right_profile_repository(
         .inner_margin(8.0)
         .show(ui, |ui| {
             ui.heading(
-                RichText::new("2. Categorized Profile Repository & Downloader")
+                RichText::new("2. SPAD.neXt Online Repository & Profile Importer")
                     .color(Color32::from_rgb(0, 240, 170))
                     .strong(),
             );
-            ui.label(
-                RichText::new(
-                    "Browse working SPAD.neXt-compatible profiles categorized by your connected flight controllers and aircraft class. Click 'Download & Activate' to install into ./profiles/ and load immediately.",
-                )
-                .small()
-                .color(Color32::GRAY),
-            );
+
+            // Top SPAD.neXt Account & Automatic License Token Bar
+            egui::Frame::default()
+                .fill(Color32::from_rgb(20, 38, 34))
+                .inner_margin(8.0)
+                .rounding(4.0)
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new("🔑 SPAD.neXt License:")
+                                .color(Color32::from_rgb(0, 255, 140))
+                                .strong(),
+                        );
+                        let key_preview = if state.spad_account.license_key.len() > 14 {
+                            format!("{}...", &state.spad_account.license_key[..14])
+                        } else {
+                            state.spad_account.license_key.clone()
+                        };
+                        ui.label(
+                            RichText::new(format!(
+                                "{} (Order #{} • Key {} • HWID {})",
+                                state.spad_account.email,
+                                state.spad_account.purchase_id,
+                                key_preview,
+                                state.spad_account.hardware_id
+                            ))
+                            .color(Color32::WHITE)
+                            .strong(),
+                        );
+                        ui.label(
+                            RichText::new("✔ Auto X-Token Active")
+                                .small()
+                                .color(Color32::from_rgb(100, 255, 160)),
+                        );
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let btn_label = if state.show_account_editor {
+                                "▲ Hide License Settings"
+                            } else {
+                                "⚙ License / Account Settings"
+                            };
+                            if ui.small_button(btn_label).clicked() {
+                                state.show_account_editor = !state.show_account_editor;
+                            }
+                        });
+                    });
+
+                    if state.show_account_editor {
+                        ui.separator();
+                        ui.label(
+                            RichText::new(
+                                "AeroDeck automatically generates the fresh SPAD.neXt X-Token header on every request using your Order/Purchase ID & Hardware ID — you never need to enter a token manually.",
+                            )
+                            .small()
+                            .color(Color32::LIGHT_GRAY),
+                        );
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Email:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.spad_account.email)
+                                    .desired_width(155.0),
+                            );
+                            ui.label("Order / Purchase ID:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.spad_account.purchase_id)
+                                    .desired_width(85.0),
+                            );
+                            ui.label("Hardware ID:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.spad_account.hardware_id)
+                                    .desired_width(175.0),
+                            );
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("License Key:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.spad_account.license_key)
+                                    .desired_width(310.0),
+                            );
+                            if ui
+                                .button(
+                                    RichText::new("💾 Save & Reconnect SPAD.neXt")
+                                        .color(Color32::from_rgb(0, 255, 140)),
+                                )
+                                .clicked()
+                            {
+                                let _ = state.spad_account.save();
+                                state.is_fetching_online = true;
+                                let _ = cmd_tx.send(GuiCommand::FetchOnlineSpadCatalog {
+                                    account: state.spad_account.clone(),
+                                });
+                                state.status_banner = Some((
+                                    "Saved SPAD.neXt license & refreshing online profile catalog..."
+                                        .to_string(),
+                                    false,
+                                ));
+                            }
+                            if ui.button("🔍 Auto-Detect My License").clicked() {
+                                state.spad_account = SpadAccountConfig::load_or_autodiscover();
+                                let _ = state.spad_account.save();
+                                state.status_banner = Some((
+                                    format!(
+                                        "Auto-detected SPAD.neXt license for {} (Order #{})",
+                                        state.spad_account.email, state.spad_account.purchase_id
+                                    ),
+                                    false,
+                                ));
+                            }
+                        });
+                    }
+                });
+
             ui.add_space(6.0);
 
-            // Connected hardware match filter
+            // Three Prominent Tabs: Online SPAD.neXt Repository | My Windows SPAD Profiles | Built-in Verified
             ui.horizontal_wrapped(|ui| {
-                ui.checkbox(
-                    &mut state.match_connected_hardware_only,
-                    RichText::new("★ Match My Connected Hardware")
-                        .color(Color32::from_rgb(255, 215, 70))
+                let online_label = if state.online_catalog.is_empty() && state.is_fetching_online {
+                    "🌐 SPAD.neXt Online Repository (Loading...)".to_string()
+                } else {
+                    format!(
+                        "🌐 SPAD.neXt Online Repository ({} Profiles)",
+                        state.online_catalog.len()
+                    )
+                };
+                ui.selectable_value(
+                    &mut state.active_repo_tab,
+                    RepositorySourceTab::OnlineSpadRepository,
+                    RichText::new(online_label).strong(),
+                );
+
+                ui.selectable_value(
+                    &mut state.active_repo_tab,
+                    RepositorySourceTab::WindowsSpadBackup,
+                    RichText::new(format!(
+                        "💻 My Windows SPAD Profiles ({})",
+                        state.windows_profiles.len()
+                    ))
+                    .strong(),
+                );
+
+                ui.selectable_value(
+                    &mut state.active_repo_tab,
+                    RepositorySourceTab::BuiltinVerified,
+                    RichText::new(format!("⭐ Built-in Verified ({})", repo_catalog.len()))
                         .strong(),
                 );
 
-                ui.separator();
-                ui.label("Aircraft Class:");
-                for cat in [
-                    "All",
-                    "Airliner",
-                    "General Aviation",
-                    "Turboprop",
-                    "Military",
-                    "Rotorcraft",
-                    "Saitek",
-                ] {
-                    ui.selectable_value(&mut state.repo_category_filter, cat.to_string(), cat);
-                }
-            });
-
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label("🔍 Filter Profiles:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.repo_search)
-                        .hint_text("Search A320, Boeing, Cessna, Winwing, TCA, Saitek...")
-                        .desired_width(240.0),
-                );
-                if !state.repo_search.is_empty() && ui.small_button("✖").clicked() {
-                    state.repo_search.clear();
-                }
-
-                if ui
-                    .button("📂 Import Local .xml / .spadprofile...")
-                    .clicked()
-                {
-                    if let Some(file) = rfd::FileDialog::new()
-                        .add_filter("SPAD.neXt Profile", &["xml", "spadprofile"])
-                        .pick_file()
-                    {
-                        let _ = cmd_tx.send(GuiCommand::LoadProfile(file));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("📂 Browse .xml / .spadprofile...").clicked() {
+                        if let Some(file) = rfd::FileDialog::new()
+                            .add_filter("SPAD.neXt Profile", &["xml", "spadprofile"])
+                            .pick_file()
+                        {
+                            let _ = cmd_tx.send(GuiCommand::ImportWindowsSpadProfile {
+                                source_path: file,
+                                activate_now: true,
+                                bind_to_aircraft: state.selected_aircraft_title.clone(),
+                            });
+                        }
                     }
-                }
+                });
             });
 
             ui.separator();
 
-            // Scrollable Repository Cards + Collapsible Online SOAP / URL section
-            ScrollArea::vertical()
-                .id_salt("profile_repository_scroll")
-                .max_height(ui.available_height() - 10.0)
-                .show(ui, |ui| {
-                    let q = state.repo_search.trim().to_lowercase();
-                    for entry in repo_catalog {
-                        let hw_matches = entry.vendor_product_ids.iter().any(|vid_pid| {
-                            devices.iter().any(|conn| {
-                                let conn_vp =
-                                    format!("{:04X}:{:04X}", conn.vendor_id, conn.product_id);
-                                conn_vp.eq_ignore_ascii_case(vid_pid)
-                            })
-                        });
+            match state.active_repo_tab {
+                RepositorySourceTab::OnlineSpadRepository => {
+                    render_online_spad_tab(ui, state, devices, active_profile_path, cmd_tx);
+                }
+                RepositorySourceTab::WindowsSpadBackup => {
+                    render_windows_spad_tab(ui, state, devices, active_profile_path, cmd_tx);
+                }
+                RepositorySourceTab::BuiltinVerified => {
+                    render_builtin_verified_tab(
+                        ui,
+                        state,
+                        repo_catalog,
+                        devices,
+                        active_profile_path,
+                        cmd_tx,
+                    );
+                }
+            }
+        });
+}
 
-                        if state.match_connected_hardware_only && !hw_matches && !devices.is_empty()
-                        {
-                            continue;
-                        }
+fn render_online_spad_tab(
+    ui: &mut Ui,
+    state: &mut AircraftProfilesViewState,
+    devices: &[ConnectedDevice],
+    active_profile_path: &str,
+    cmd_tx: &mpsc::UnboundedSender<GuiCommand>,
+) {
+    // Search & Device Filter Controls
+    ui.horizontal_wrapped(|ui| {
+        ui.label("🔍 Search Online:");
+        ui.add(
+            egui::TextEdit::singleline(&mut state.online_search)
+                .hint_text("Search Fenix, A320, FBW, PMDG 737, 777, B787, Duke, C172, author...")
+                .desired_width(240.0),
+        );
+        if !state.online_search.is_empty() && ui.small_button("✖").clicked() {
+            state.online_search.clear();
+        }
 
-                        if state.repo_category_filter != "All"
-                            && !entry
-                                .aircraft_category
-                                .to_lowercase()
-                                .contains(&state.repo_category_filter.to_lowercase())
-                            && !entry
-                                .device_category
-                                .to_lowercase()
-                                .contains(&state.repo_category_filter.to_lowercase())
-                        {
-                            continue;
-                        }
+        ui.checkbox(
+            &mut state.online_match_my_devices,
+            RichText::new("★ Only My Connected Hardware")
+                .color(Color32::from_rgb(255, 215, 70))
+                .strong(),
+        );
 
-                        if !q.is_empty()
-                            && !entry.name.to_lowercase().contains(&q)
-                            && !entry.description.to_lowercase().contains(&q)
-                            && !entry.aircraft_category.to_lowercase().contains(&q)
-                        {
-                            continue;
-                        }
+        if ui.button("🔄 Refresh Online Catalog").clicked() {
+            state.is_fetching_online = true;
+            let _ = cmd_tx.send(GuiCommand::FetchOnlineSpadCatalog {
+                account: state.spad_account.clone(),
+            });
+        }
+    });
 
-                        let rel_file = format!("profiles/{}", entry.filename);
-                        let is_currently_active = active_profile_path == rel_file
-                            || active_profile_path.ends_with(&entry.filename);
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Quick Filter:").small().color(Color32::GRAY));
+        for preset in [
+            ("All", ""),
+            ("Fenix A320", "Fenix"),
+            ("FBW A32NX", "A32"),
+            ("PMDG 737", "737"),
+            ("PMDG 777", "777"),
+            ("B787", "787"),
+            ("C172 / GA", "172"),
+            ("Winwing", "4098:"),
+            ("Thrustmaster TCA", "044F:0407"),
+        ] {
+            let active = state.online_search.eq_ignore_ascii_case(preset.1);
+            if ui.selectable_label(active, preset.0).clicked() {
+                state.online_search = preset.1.to_string();
+            }
+        }
+    });
 
-                        let card_bg = if is_currently_active {
-                            Color32::from_rgb(20, 48, 40)
-                        } else {
-                            Color32::from_rgb(28, 32, 42)
-                        };
+    ui.separator();
 
-                        egui::Frame::default()
-                            .fill(card_bg)
-                            .inner_margin(8.0)
-                            .rounding(5.0)
-                            .show(ui, |ui| {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(
-                                        RichText::new(&entry.name)
-                                            .color(Color32::from_rgb(0, 230, 255))
-                                            .strong()
-                                            .size(15.0),
-                                    );
-                                    ui.label(
-                                        RichText::new(format!("[{}]", entry.aircraft_category))
-                                            .small()
-                                            .color(Color32::from_rgb(255, 200, 90)),
-                                    );
-                                    if is_currently_active {
-                                        ui.label(
-                                            RichText::new("● ACTIVE PROFILE")
-                                                .small()
-                                                .color(Color32::from_rgb(0, 255, 130))
-                                                .strong(),
-                                        );
-                                    }
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            ui.label(
-                                                RichText::new(format!(
-                                                    "★ {:.1} ({} dl)",
-                                                    entry.rating, entry.downloads
-                                                ))
-                                                .small()
-                                                .color(Color32::from_rgb(255, 215, 0)),
-                                            );
-                                        },
-                                    );
-                                });
+    if state.online_catalog.is_empty() {
+        if state.is_fetching_online {
+            ui.label(
+                RichText::new(
+                    "⏳ Fetching 2,250+ profiles from update.spadnext.net using your SPAD.neXt license...",
+                )
+                .color(Color32::from_rgb(0, 225, 255)),
+            );
+        } else {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Online catalog not loaded yet.")
+                        .italics()
+                        .color(Color32::GRAY),
+                );
+                if ui.button("🌐 Load SPAD.neXt Online Profiles Now").clicked() {
+                    state.is_fetching_online = true;
+                    let _ = cmd_tx.send(GuiCommand::FetchOnlineSpadCatalog {
+                        account: state.spad_account.clone(),
+                    });
+                }
+            });
+        }
+        return;
+    }
 
-                                // Hardware Device Compatibility Badges
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(
-                                        RichText::new("Devices:").small().color(Color32::GRAY),
-                                    );
-                                    for vp in &entry.vendor_product_ids {
-                                        let is_plugged_in = devices.iter().any(|c| {
-                                            format!("{:04X}:{:04X}", c.vendor_id, c.product_id)
-                                                .eq_ignore_ascii_case(vp)
-                                        });
-                                        let dev_label = EXTRACTED_USB_DEVICES
-                                            .iter()
-                                            .find(|d| d.vid_pid.eq_ignore_ascii_case(vp))
-                                            .map(|d| format!("{} {}", d.vendor_name, d.product_name))
-                                            .unwrap_or_else(|| vp.clone());
+    let q = state.online_search.trim().to_lowercase();
+    let filtered: Vec<&OnlineSpadProfileEntry> = state
+        .online_catalog
+        .iter()
+        .filter(|entry| {
+            if state.online_match_my_devices && !devices.is_empty() {
+                let matches_conn = entry.devices.iter().any(|vp| {
+                    devices.iter().any(|c| {
+                        format!("{:04X}:{:04X}", c.vendor_id, c.product_id)
+                            .eq_ignore_ascii_case(vp)
+                            || (c.vendor_id == 0x4098 && vp.starts_with("4098:"))
+                    })
+                });
+                if !matches_conn {
+                    return false;
+                }
+            }
+            if q.is_empty() {
+                return true;
+            }
+            entry.name.to_lowercase().contains(&q)
+                || entry.author.to_lowercase().contains(&q)
+                || entry.comment.to_lowercase().contains(&q)
+                || entry.aircrafts.iter().any(|a| a.to_lowercase().contains(&q))
+                || entry.devices.iter().any(|d| d.to_lowercase().contains(&q))
+        })
+        .collect();
 
-                                        let (badge_col, prefix) = if is_plugged_in {
-                                            (Color32::from_rgb(0, 255, 130), "✔ ")
-                                        } else {
-                                            (Color32::LIGHT_GRAY, "• ")
-                                        };
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "{}{} [{}]",
-                                                prefix, dev_label, vp
-                                            ))
-                                            .small()
-                                            .color(badge_col),
-                                        );
-                                    }
-                                });
+    ui.label(
+        RichText::new(format!(
+            "Showing {} of {} matching online profiles from update.spadnext.net (sorted by popularity):",
+            filtered.len().min(150),
+            filtered.len()
+        ))
+        .small()
+        .color(Color32::GRAY),
+    );
+    ui.add_space(4.0);
 
+    ScrollArea::vertical()
+        .id_salt("online_spad_catalog_scroll")
+        .max_height(ui.available_height() - 10.0)
+        .show(ui, |ui| {
+            for entry in filtered.into_iter().take(150) {
+                egui::Frame::default()
+                    .fill(Color32::from_rgb(28, 33, 44))
+                    .inner_margin(8.0)
+                    .rounding(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(&entry.name)
+                                    .color(Color32::from_rgb(0, 230, 255))
+                                    .strong()
+                                    .size(15.0),
+                            );
+                            ui.label(
+                                RichText::new(format!(
+                                    "by {} • v{} • {}",
+                                    entry.author, entry.version, entry.published
+                                ))
+                                .small()
+                                .color(Color32::LIGHT_GRAY),
+                            );
+                            if !entry.features.is_empty() {
                                 ui.label(
-                                    RichText::new(&entry.description)
+                                    RichText::new(format!("[{}]", entry.features))
                                         .small()
-                                        .color(Color32::from_rgb(200, 205, 215)),
+                                        .color(Color32::from_rgb(255, 200, 90)),
                                 );
-
-                                if !entry.recommended_aircraft_titles.is_empty() {
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
                                     ui.label(
                                         RichText::new(format!(
-                                            "Auto-binds to: {}",
-                                            entry.recommended_aircraft_titles.join(", ")
+                                            "⬇ {} dl  •  ★ {}",
+                                            entry.dlcount, entry.rating
                                         ))
                                         .small()
-                                        .color(Color32::from_rgb(130, 185, 240)),
+                                        .color(Color32::from_rgb(255, 215, 0)),
+                                    );
+                                },
+                            );
+                        });
+
+                        if !entry.devices.is_empty() {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new("Devices:").small().color(Color32::GRAY));
+                                for vp in entry.devices.iter().take(8) {
+                                    let is_plugged_in = devices.iter().any(|c| {
+                                        format!("{:04X}:{:04X}", c.vendor_id, c.product_id)
+                                            .eq_ignore_ascii_case(vp)
+                                    });
+                                    let dev_label = EXTRACTED_USB_DEVICES
+                                        .iter()
+                                        .find(|d| d.vid_pid.eq_ignore_ascii_case(vp))
+                                        .map(|d| format!("{} {}", d.vendor_name, d.product_name))
+                                        .unwrap_or_else(|| vp.clone());
+                                    let (col, pfx) = if is_plugged_in {
+                                        (Color32::from_rgb(0, 255, 130), "✔ ")
+                                    } else {
+                                        (Color32::LIGHT_GRAY, "• ")
+                                    };
+                                    ui.label(
+                                        RichText::new(format!("{}{} [{}]", pfx, dev_label, vp))
+                                            .small()
+                                            .color(col),
                                     );
                                 }
-
-                                ui.add_space(4.0);
-                                ui.horizontal_wrapped(|ui| {
-                                    if ui
-                                        .button(
-                                            RichText::new("📥 Download & Activate Now")
-                                                .color(Color32::from_rgb(0, 255, 140))
-                                                .strong(),
-                                        )
-                                        .clicked()
-                                    {
-                                        let _ = cmd_tx.send(GuiCommand::InstallRepositoryProfile {
-                                            repo_id: entry.id.clone(),
-                                            activate_now: true,
-                                            bind_to_aircraft: None,
-                                        });
-                                        state.status_banner = Some((
-                                            format!(
-                                                "Downloaded & activated '{}' (profiles/{})",
-                                                entry.name, entry.filename
-                                            ),
-                                            false,
-                                        ));
-                                    }
-
-                                    if let Some(ref sel_ac) = state.selected_aircraft_title.clone()
-                                    {
-                                        if ui
-                                            .button(
-                                                RichText::new(format!(
-                                                    "🔗 Download & Bind to '{}'",
-                                                    sel_ac
-                                                ))
-                                                .color(Color32::from_rgb(100, 220, 255)),
-                                            )
-                                            .clicked()
-                                        {
-                                            let _ =
-                                                cmd_tx.send(GuiCommand::InstallRepositoryProfile {
-                                                    repo_id: entry.id.clone(),
-                                                    activate_now: true,
-                                                    bind_to_aircraft: Some(sel_ac.clone()),
-                                                });
-                                            state.status_banner = Some((
-                                                format!(
-                                                    "Downloaded '{}' and bound to '{}'",
-                                                    entry.name, sel_ac
-                                                ),
-                                                false,
-                                            ));
-                                        }
-                                    }
-                                });
                             });
-                        ui.add_space(6.0);
-                    }
+                        }
 
-                    ui.separator();
+                        if !entry.aircrafts.is_empty() {
+                            let ac_preview = entry
+                                .aircrafts
+                                .iter()
+                                .take(4)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            ui.label(
+                                RichText::new(format!("Aircraft: {}", ac_preview))
+                                    .small()
+                                    .color(Color32::from_rgb(130, 195, 250)),
+                            );
+                        }
 
-                    // Collapsible section for Online SPAD.neXt SOAP Service & Direct URL Import
-                    egui::CollapsingHeader::new(
-                        RichText::new(
-                            "🌐 Online SPAD.neXt SOAP Service (update.spadnext.net) & Direct URL Importer",
-                        )
-                        .color(Color32::from_rgb(160, 200, 255)),
-                    )
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        ui.label(
-                            RichText::new(
-                                "Import any .xml / .spadprofile directly from a web URL, or query the official SPAD.neXt SOAP 1.1 endpoint (https://update.spadnext.net/service/UpdateSvc2.asmx) with your SPAD.neXt account X-Token.",
-                            )
-                            .small()
-                            .color(Color32::GRAY),
-                        );
+                        if !entry.comment.trim().is_empty() {
+                            let short_comment = if entry.comment.len() > 220 {
+                                format!("{}...", &entry.comment[..220])
+                            } else {
+                                entry.comment.clone()
+                            };
+                            ui.label(
+                                RichText::new(short_comment)
+                                    .small()
+                                    .color(Color32::from_rgb(195, 200, 210)),
+                            );
+                        }
+
                         ui.add_space(4.0);
-
-                        ui.horizontal(|ui| {
-                            ui.label("Direct XML URL:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut state.direct_url_input)
-                                    .hint_text("https://.../profile.xml")
-                                    .desired_width(210.0),
-                            );
-                            ui.label("Save as:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut state.direct_url_save_name)
-                                    .desired_width(130.0),
-                            );
-                            if ui.button("📥 Download URL").clicked()
-                                && !state.direct_url_input.trim().is_empty()
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .button(
+                                    RichText::new("📥 Download & Activate Now")
+                                        .color(Color32::from_rgb(0, 255, 140))
+                                        .strong(),
+                                )
+                                .clicked()
                             {
-                                let _ = cmd_tx.send(GuiCommand::ImportProfileFromUrl {
-                                    url: state.direct_url_input.trim().to_string(),
-                                    save_name: state.direct_url_save_name.trim().to_string(),
+                                let _ = cmd_tx.send(GuiCommand::DownloadOnlineSpadSnippet {
+                                    snippet_id: entry.snippet_id,
+                                    profile_name: entry.name.clone(),
+                                    account: state.spad_account.clone(),
                                     activate_now: true,
+                                    bind_to_aircraft: None,
                                 });
+                                state.status_banner = Some((
+                                    format!(
+                                        "Downloading SPAD.neXt Profile #{} '{}'...",
+                                        entry.snippet_id, entry.name
+                                    ),
+                                    false,
+                                ));
+                            }
+
+                            if let Some(ref sel_ac) = state.selected_aircraft_title.clone() {
+                                if ui
+                                    .button(
+                                        RichText::new(format!(
+                                            "🔗 Download & Bind to '{}'",
+                                            sel_ac
+                                        ))
+                                        .color(Color32::from_rgb(100, 220, 255)),
+                                    )
+                                    .clicked()
+                                {
+                                    let _ = cmd_tx.send(GuiCommand::DownloadOnlineSpadSnippet {
+                                        snippet_id: entry.snippet_id,
+                                        profile_name: entry.name.clone(),
+                                        account: state.spad_account.clone(),
+                                        activate_now: true,
+                                        bind_to_aircraft: Some(sel_ac.clone()),
+                                    });
+                                    state.status_banner = Some((
+                                        format!(
+                                            "Downloading '{}' and binding to '{}'...",
+                                            entry.name, sel_ac
+                                        ),
+                                        false,
+                                    ));
+                                }
+                            }
+
+                            let _ = active_profile_path;
+                        });
+                    });
+                ui.add_space(6.0);
+            }
+        });
+}
+
+fn render_windows_spad_tab(
+    ui: &mut Ui,
+    state: &mut AircraftProfilesViewState,
+    devices: &[ConnectedDevice],
+    active_profile_path: &str,
+    cmd_tx: &mpsc::UnboundedSender<GuiCommand>,
+) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Windows SPAD.neXt Folder:").color(Color32::LIGHT_GRAY));
+        ui.add(
+            egui::TextEdit::singleline(&mut state.spad_account.windows_spad_dir)
+                .desired_width(310.0),
+        );
+        if ui.button("📂 Pick Folder...").clicked() {
+            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                state.spad_account.windows_spad_dir = dir.to_string_lossy().to_string();
+                let _ = state.spad_account.save();
+                let _ = cmd_tx.send(GuiCommand::ImportAllWindowsSpadProfiles {
+                    custom_dir: Some(state.spad_account.windows_spad_dir.clone()),
+                });
+            }
+        }
+        if ui
+            .button(
+                RichText::new("📥 Import All to AeroDeck")
+                    .color(Color32::from_rgb(0, 255, 140))
+                    .strong(),
+            )
+            .clicked()
+        {
+            let _ = cmd_tx.send(GuiCommand::ImportAllWindowsSpadProfiles {
+                custom_dir: Some(state.spad_account.windows_spad_dir.clone()),
+            });
+            state.status_banner = Some((
+                "Imported all Windows SPAD.neXt profiles into ./profiles/".to_string(),
+                false,
+            ));
+        }
+    });
+
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "These are your personal SPAD.neXt profiles discovered from your Windows backup/installation. They are automatically imported into ./profiles/ so you can activate or bind them to any aircraft in 1 click!",
+        )
+        .small()
+        .color(Color32::GRAY),
+    );
+    ui.separator();
+
+    let win_list = state.windows_profiles.clone();
+    ScrollArea::vertical()
+        .id_salt("windows_spad_profiles_scroll")
+        .max_height(ui.available_height() - 10.0)
+        .show(ui, |ui| {
+            if win_list.is_empty() {
+                ui.label(
+                    RichText::new(
+                        "No Windows SPAD.neXt profiles found in the specified folder. Click 'Pick Folder...' to select your Windows Documents/SPAD.neXt/profiles directory.",
+                    )
+                    .italics()
+                    .color(Color32::GRAY),
+                );
+                return;
+            }
+
+            for wp in &win_list {
+                let rel_file = format!("profiles/{}", wp.filename);
+                let is_active = active_profile_path == rel_file
+                    || active_profile_path.ends_with(&wp.filename);
+                let bg = if is_active {
+                    Color32::from_rgb(20, 48, 40)
+                } else {
+                    Color32::from_rgb(28, 32, 42)
+                };
+
+                egui::Frame::default()
+                    .fill(bg)
+                    .inner_margin(8.0)
+                    .rounding(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(&wp.name)
+                                    .color(Color32::from_rgb(0, 230, 255))
+                                    .strong()
+                                    .size(15.0),
+                            );
+                            ui.label(
+                                RichText::new(format!("({})", wp.filename))
+                                    .small()
+                                    .color(Color32::GRAY),
+                            );
+                            if is_active {
+                                ui.label(
+                                    RichText::new("● ACTIVE PROFILE")
+                                        .small()
+                                        .color(Color32::from_rgb(0, 255, 130))
+                                        .strong(),
+                                );
+                            } else if wp.already_imported {
+                                ui.label(
+                                    RichText::new("✔ Imported in ./profiles/")
+                                        .small()
+                                        .color(Color32::from_rgb(120, 220, 160)),
+                                );
+                            }
+                            if !wp.last_changed.is_empty() {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            RichText::new(format!("Modified: {}", wp.last_changed))
+                                                .small()
+                                                .color(Color32::GRAY),
+                                        );
+                                    },
+                                );
                             }
                         });
 
-                        ui.add_space(6.0);
+                        if !wp.devices.is_empty() {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new("Devices:").small().color(Color32::GRAY));
+                                for vp in &wp.devices {
+                                    let is_plugged_in = devices.iter().any(|c| {
+                                        format!("{:04X}:{:04X}", c.vendor_id, c.product_id)
+                                            .eq_ignore_ascii_case(vp)
+                                    });
+                                    let dev_label = EXTRACTED_USB_DEVICES
+                                        .iter()
+                                        .find(|d| d.vid_pid.eq_ignore_ascii_case(vp))
+                                        .map(|d| format!("{} {}", d.vendor_name, d.product_name))
+                                        .unwrap_or_else(|| vp.clone());
+                                    let (col, pfx) = if is_plugged_in {
+                                        (Color32::from_rgb(0, 255, 130), "✔ ")
+                                    } else {
+                                        (Color32::LIGHT_GRAY, "• ")
+                                    };
+                                    ui.label(
+                                        RichText::new(format!("{}{} [{}]", pfx, dev_label, vp))
+                                            .small()
+                                            .color(col),
+                                    );
+                                }
+                            });
+                        }
+
+                        ui.add_space(4.0);
                         ui.horizontal_wrapped(|ui| {
-                            ui.label("SOAP Search:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut state.soap_search_query)
-                                    .desired_width(90.0),
-                            );
-                            ui.label("VID:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut state.soap_vid_input)
-                                    .desired_width(60.0),
-                            );
-                            ui.label("PID:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut state.soap_pid_input)
-                                    .desired_width(60.0),
-                            );
-                            ui.label("X-Token (optional):");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut state.soap_token_input)
-                                    .password(true)
-                                    .desired_width(100.0),
-                            );
-                            if ui.button("🔍 Query SOAP").clicked() {
-                                let tok = if state.soap_token_input.trim().is_empty() {
-                                    None
-                                } else {
-                                    Some(state.soap_token_input.trim().to_string())
-                                };
-                                let _ = cmd_tx.send(GuiCommand::QuerySpadOnlineSoap {
-                                    search_query: state.soap_search_query.clone(),
-                                    device_vid: state.soap_vid_input.clone(),
-                                    device_pid: state.soap_pid_input.clone(),
-                                    license_token: tok,
+                            if ui
+                                .button(
+                                    RichText::new("⚡ Import & Activate Now")
+                                        .color(Color32::from_rgb(0, 255, 140))
+                                        .strong(),
+                                )
+                                .clicked()
+                            {
+                                let _ = cmd_tx.send(GuiCommand::ImportWindowsSpadProfile {
+                                    source_path: wp.source_path.clone(),
+                                    activate_now: true,
+                                    bind_to_aircraft: None,
                                 });
+                                state.status_banner = Some((
+                                    format!("Activated Windows SPAD profile '{}'", wp.name),
+                                    false,
+                                ));
+                            }
+
+                            if let Some(ref sel_ac) = state.selected_aircraft_title.clone() {
+                                if ui
+                                    .button(
+                                        RichText::new(format!(
+                                            "🔗 Import & Bind to '{}'",
+                                            sel_ac
+                                        ))
+                                        .color(Color32::from_rgb(100, 220, 255)),
+                                    )
+                                    .clicked()
+                                {
+                                    let _ = cmd_tx.send(GuiCommand::ImportWindowsSpadProfile {
+                                        source_path: wp.source_path.clone(),
+                                        activate_now: true,
+                                        bind_to_aircraft: Some(sel_ac.clone()),
+                                    });
+                                    state.status_banner = Some((
+                                        format!("Bound '{}' -> '{}'", sel_ac, rel_file),
+                                        false,
+                                    ));
+                                }
                             }
                         });
                     });
+                ui.add_space(6.0);
+            }
+        });
+}
+
+fn render_builtin_verified_tab(
+    ui: &mut Ui,
+    state: &mut AircraftProfilesViewState,
+    repo_catalog: &[RepositoryProfileEntry],
+    devices: &[ConnectedDevice],
+    active_profile_path: &str,
+    cmd_tx: &mpsc::UnboundedSender<GuiCommand>,
+) {
+    ui.horizontal_wrapped(|ui| {
+        ui.checkbox(
+            &mut state.match_connected_hardware_only,
+            RichText::new("★ Match My Connected Hardware")
+                .color(Color32::from_rgb(255, 215, 70))
+                .strong(),
+        );
+
+        ui.separator();
+        ui.label("Aircraft Class:");
+        for cat in [
+            "All",
+            "Airliner",
+            "General Aviation",
+            "Turboprop",
+            "Military",
+            "Rotorcraft",
+            "Saitek",
+        ] {
+            ui.selectable_value(&mut state.repo_category_filter, cat.to_string(), cat);
+        }
+    });
+
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("🔍 Filter Profiles:");
+        ui.add(
+            egui::TextEdit::singleline(&mut state.repo_search)
+                .hint_text("Search A320, Boeing, Cessna, Winwing, TCA, Saitek...")
+                .desired_width(240.0),
+        );
+        if !state.repo_search.is_empty() && ui.small_button("✖").clicked() {
+            state.repo_search.clear();
+        }
+    });
+
+    ui.separator();
+
+    ScrollArea::vertical()
+        .id_salt("profile_repository_scroll")
+        .max_height(ui.available_height() - 10.0)
+        .show(ui, |ui| {
+            let q = state.repo_search.trim().to_lowercase();
+            for entry in repo_catalog {
+                let hw_matches = entry.vendor_product_ids.iter().any(|vid_pid| {
+                    devices.iter().any(|conn| {
+                        let conn_vp =
+                            format!("{:04X}:{:04X}", conn.vendor_id, conn.product_id);
+                        conn_vp.eq_ignore_ascii_case(vid_pid)
+                    })
                 });
+
+                if state.match_connected_hardware_only && !hw_matches && !devices.is_empty() {
+                    continue;
+                }
+
+                if state.repo_category_filter != "All"
+                    && !entry
+                        .aircraft_category
+                        .to_lowercase()
+                        .contains(&state.repo_category_filter.to_lowercase())
+                    && !entry
+                        .device_category
+                        .to_lowercase()
+                        .contains(&state.repo_category_filter.to_lowercase())
+                {
+                    continue;
+                }
+
+                if !q.is_empty()
+                    && !entry.name.to_lowercase().contains(&q)
+                    && !entry.description.to_lowercase().contains(&q)
+                    && !entry.aircraft_category.to_lowercase().contains(&q)
+                {
+                    continue;
+                }
+
+                let rel_file = format!("profiles/{}", entry.filename);
+                let is_currently_active = active_profile_path == rel_file
+                    || active_profile_path.ends_with(&entry.filename);
+
+                let card_bg = if is_currently_active {
+                    Color32::from_rgb(20, 48, 40)
+                } else {
+                    Color32::from_rgb(28, 32, 42)
+                };
+
+                egui::Frame::default()
+                    .fill(card_bg)
+                    .inner_margin(8.0)
+                    .rounding(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(&entry.name)
+                                    .color(Color32::from_rgb(0, 230, 255))
+                                    .strong()
+                                    .size(15.0),
+                            );
+                            ui.label(
+                                RichText::new(format!("[{}]", entry.aircraft_category))
+                                    .small()
+                                    .color(Color32::from_rgb(255, 200, 90)),
+                            );
+                            if is_currently_active {
+                                ui.label(
+                                    RichText::new("● ACTIVE PROFILE")
+                                        .small()
+                                        .color(Color32::from_rgb(0, 255, 130))
+                                        .strong(),
+                                );
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "★ {:.1} ({} dl)",
+                                            entry.rating, entry.downloads
+                                        ))
+                                        .small()
+                                        .color(Color32::from_rgb(255, 215, 0)),
+                                    );
+                                },
+                            );
+                        });
+
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new("Devices:").small().color(Color32::GRAY));
+                            for vp in &entry.vendor_product_ids {
+                                let is_plugged_in = devices.iter().any(|c| {
+                                    format!("{:04X}:{:04X}", c.vendor_id, c.product_id)
+                                        .eq_ignore_ascii_case(vp)
+                                });
+                                let dev_label = EXTRACTED_USB_DEVICES
+                                    .iter()
+                                    .find(|d| d.vid_pid.eq_ignore_ascii_case(vp))
+                                    .map(|d| format!("{} {}", d.vendor_name, d.product_name))
+                                    .unwrap_or_else(|| vp.clone());
+
+                                let (badge_col, prefix) = if is_plugged_in {
+                                    (Color32::from_rgb(0, 255, 130), "✔ ")
+                                } else {
+                                    (Color32::LIGHT_GRAY, "• ")
+                                };
+                                ui.label(
+                                    RichText::new(format!("{}{} [{}]", prefix, dev_label, vp))
+                                        .small()
+                                        .color(badge_col),
+                                );
+                            }
+                        });
+
+                        ui.label(
+                            RichText::new(&entry.description)
+                                .small()
+                                .color(Color32::from_rgb(200, 205, 215)),
+                        );
+
+                        if !entry.recommended_aircraft_titles.is_empty() {
+                            ui.label(
+                                RichText::new(format!(
+                                    "Auto-binds to: {}",
+                                    entry.recommended_aircraft_titles.join(", ")
+                                ))
+                                .small()
+                                .color(Color32::from_rgb(130, 185, 240)),
+                            );
+                        }
+
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .button(
+                                    RichText::new("📥 Download & Activate Now")
+                                        .color(Color32::from_rgb(0, 255, 140))
+                                        .strong(),
+                                )
+                                .clicked()
+                            {
+                                let _ = cmd_tx.send(GuiCommand::InstallRepositoryProfile {
+                                    repo_id: entry.id.clone(),
+                                    activate_now: true,
+                                    bind_to_aircraft: None,
+                                });
+                                state.status_banner = Some((
+                                    format!(
+                                        "Downloaded & activated '{}' (profiles/{})",
+                                        entry.name, entry.filename
+                                    ),
+                                    false,
+                                ));
+                            }
+
+                            if let Some(ref sel_ac) = state.selected_aircraft_title.clone() {
+                                if ui
+                                    .button(
+                                        RichText::new(format!(
+                                            "🔗 Download & Bind to '{}'",
+                                            sel_ac
+                                        ))
+                                        .color(Color32::from_rgb(100, 220, 255)),
+                                    )
+                                    .clicked()
+                                {
+                                    let _ = cmd_tx.send(GuiCommand::InstallRepositoryProfile {
+                                        repo_id: entry.id.clone(),
+                                        activate_now: true,
+                                        bind_to_aircraft: Some(sel_ac.clone()),
+                                    });
+                                    state.status_banner = Some((
+                                        format!(
+                                            "Downloaded '{}' and bound to '{}'",
+                                            entry.name, sel_ac
+                                        ),
+                                        false,
+                                    ));
+                                }
+                            }
+                        });
+                    });
+                ui.add_space(6.0);
+            }
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("Direct XML URL:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.direct_url_input)
+                        .hint_text("https://.../profile.xml")
+                        .desired_width(210.0),
+                );
+                ui.label("Save as:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.direct_url_save_name)
+                        .desired_width(130.0),
+                );
+                if ui.button("📥 Download URL").clicked()
+                    && !state.direct_url_input.trim().is_empty()
+                {
+                    let _ = cmd_tx.send(GuiCommand::ImportProfileFromUrl {
+                        url: state.direct_url_input.trim().to_string(),
+                        save_name: state.direct_url_save_name.trim().to_string(),
+                        activate_now: true,
+                    });
+                }
+            });
         });
 }

@@ -362,7 +362,7 @@ fn render_current_bindings_group(
                     for page in &mut dev.pages {
                         if let Some(ref mut evs) = page.events {
                             for ev in &mut evs.items {
-                                if ev.bound_to == state.selected_input {
+                                if crate::profile::schema::bound_to_matches(&ev.bound_to, &state.selected_input) {
                                     if let Some(ref mut defs) = ev.event_definitions {
                                         for (def_idx, def) in defs.items.iter().enumerate() {
                                             let trigger = def.trigger.as_deref().unwrap_or("ALL");
@@ -379,6 +379,9 @@ fn render_current_bindings_group(
                                                                     let name = c.target.strip_prefix("SIMCONNECT:").unwrap_or(&c.target).to_string();
                                                                     to_test = Some(GuiCommand::FireSimConnectEvent { event_name: name, value: val });
                                                                 }
+                                                            }
+                                                            EventActionItem::CustomAxis(ca) => {
+                                                                ui.label(format!("⚡ CustomAxis: {}", ca.target));
                                                             }
                                                             EventActionItem::ChangeValue(cv) => {
                                                                 ui.label(format!("📝 LVAR: {} = {:?}", cv.target, cv.value));
@@ -726,7 +729,7 @@ fn count_actions_for_input(profile: &Option<SpadProfile>, input_name: &str) -> u
                 for page in &dev.pages {
                     if let Some(ref evs) = page.events {
                         for ev in &evs.items {
-                            if ev.bound_to == input_name {
+                            if crate::profile::schema::bound_to_matches(&ev.bound_to, input_name) {
                                 if let Some(ref defs) = ev.event_definitions {
                                     return defs.items.iter().map(|d| d.actions.as_ref().map(|a| a.items.len()).unwrap_or(0)).sum();
                                 }
@@ -755,6 +758,7 @@ fn add_action_to_profile(profile: &mut Option<SpadProfile>, state: &MappingViewS
             options: None,
             assigned_aircrafts: None,
             devices: Some(crate::profile::schema::DeviceList { items: Vec::new() }),
+            profile_info: None,
         });
     }
 
@@ -768,7 +772,7 @@ fn add_action_to_profile(profile: &mut Option<SpadProfile>, state: &MappingViewS
     // Find or create device profile matching active device
     let dev_idx = match devs.items.iter().position(|d| {
         d.id.as_deref() == Some(&active_dev.id)
-            || d.product_id.as_deref() == Some(&format!("{:04X}", active_dev.product_id))
+            || d.matches_vid_pid(active_dev.vendor_id, active_dev.product_id)
     }) {
         Some(idx) => idx,
         None => {
@@ -898,7 +902,7 @@ fn remove_action_from_profile(profile: &mut Option<SpadProfile>, bound_to: &str,
                 for page in &mut dev.pages {
                     if let Some(ref mut evs) = page.events {
                         for ev in &mut evs.items {
-                            if ev.bound_to == bound_to {
+                            if crate::profile::schema::bound_to_matches(&ev.bound_to, bound_to) {
                                 if let Some(ref mut defs) = ev.event_definitions {
                                     if def_idx < defs.items.len() {
                                         if let Some(ref mut acts) = defs.items[def_idx].actions {
@@ -940,6 +944,7 @@ fn add_axis_action_to_profile(
             options: None,
             assigned_aircrafts: None,
             devices: Some(crate::profile::schema::DeviceList { items: Vec::new() }),
+            profile_info: None,
         });
     }
 
@@ -952,7 +957,7 @@ fn add_axis_action_to_profile(
 
     let dev_idx = match devs.items.iter().position(|d| {
         d.id.as_deref() == Some(&active_dev.id)
-            || d.product_id.as_deref() == Some(&format!("{:04X}", active_dev.product_id))
+            || d.matches_vid_pid(active_dev.vendor_id, active_dev.product_id)
     }) {
         Some(idx) => idx,
         None => {

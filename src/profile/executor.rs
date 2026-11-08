@@ -78,11 +78,7 @@ impl ProfileExecutor {
             None => return Ok(false),
         };
 
-        let device = devices.iter().find(|d| {
-            d.id.as_deref() == Some(device_id)
-                || d.product_id.as_deref() == Some(device_id)
-                || d.name.as_deref() == Some(device_id)
-        });
+        let device = devices.iter().find(|d| d.matches_device_id(device_id));
 
         let device = match device {
             Some(d) => d,
@@ -101,7 +97,7 @@ impl ProfileExecutor {
             None => return Ok(false),
         };
 
-        let spad_event = match events.iter().find(|e| e.bound_to.eq_ignore_ascii_case(bound_to)) {
+        let spad_event = match events.iter().find(|e| bound_to_matches(&e.bound_to, bound_to)) {
             Some(e) => e,
             None => return Ok(false),
         };
@@ -120,10 +116,32 @@ impl ProfileExecutor {
         for def in defs {
             if let Some(actions) = &def.actions {
                 for act in &actions.items {
-                    if let EventActionItem::Control(ctrl) = act {
-                        let event_name = ctrl.target.strip_prefix("SIMCONNECT:").unwrap_or(&ctrl.target);
-                        let _ = self.simconnect.map_client_event_to_sim_event(2, event_name).await;
-                        let _ = self.simconnect.transmit_client_event(0, 2, sim_axis_value as u32).await;
+                    match act {
+                        EventActionItem::Control(ctrl) => {
+                            let event_name = ctrl.target.strip_prefix("SIMCONNECT:").unwrap_or(&ctrl.target);
+                            let _ = self.simconnect.map_client_event_to_sim_event(2, event_name).await;
+                            let _ = self.simconnect.transmit_client_event(0, 2, sim_axis_value as u32).await;
+                        }
+                        EventActionItem::CustomAxis(caxis) => {
+                            let invert = caxis
+                                .options
+                                .as_ref()
+                                .map(|opts| {
+                                    opts.items.iter().any(|o| {
+                                        o.key.eq_ignore_ascii_case("INVERTAXIS")
+                                            && o.value.as_deref() == Some("True")
+                                    })
+                                })
+                                .unwrap_or(false);
+                            let val = if invert { -sim_axis_value } else { sim_axis_value };
+                            let event_name = caxis
+                                .target
+                                .strip_prefix("SIMCONNECT:")
+                                .unwrap_or(&caxis.target);
+                            let _ = self.simconnect.map_client_event_to_sim_event(2, event_name).await;
+                            let _ = self.simconnect.transmit_client_event(0, 2, val as u32).await;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -142,11 +160,7 @@ impl ProfileExecutor {
         };
 
         // Find device profile
-        let device = devices.iter().find(|d| {
-            d.id.as_deref() == Some(device_id)
-                || d.product_id.as_deref() == Some(device_id)
-                || d.name.as_deref() == Some(device_id)
-        });
+        let device = devices.iter().find(|d| d.matches_device_id(device_id));
 
         let device = match device {
             Some(d) => d,
@@ -168,7 +182,7 @@ impl ProfileExecutor {
             None => return Ok(false),
         };
 
-        let spad_event = events.iter().find(|e| e.bound_to.eq_ignore_ascii_case(bound_to));
+        let spad_event = events.iter().find(|e| bound_to_matches(&e.bound_to, bound_to));
         let spad_event = match spad_event {
             Some(e) => e,
             None => {
@@ -199,7 +213,12 @@ impl ProfileExecutor {
 
         for def in defs {
             let def_trigger = def.trigger.as_deref().unwrap_or("");
-            if !def_trigger.is_empty() && !def_trigger.eq_ignore_ascii_case(trigger) {
+            let trigger_matches = def_trigger.is_empty()
+                || def_trigger.eq_ignore_ascii_case(trigger)
+                || (trigger.eq_ignore_ascii_case("PRESS")
+                    && (def_trigger.eq_ignore_ascii_case("PRESSSHORT")
+                        || def_trigger.eq_ignore_ascii_case("HELD")));
+            if !trigger_matches {
                 continue;
             }
 

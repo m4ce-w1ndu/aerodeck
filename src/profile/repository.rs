@@ -136,6 +136,196 @@ pub const EXTRACTED_USB_DEVICES: &[UsbDeviceIdentity] = &[
     },
 ];
 
+pub const SPAD_ACCOUNT_CONF_FILE: &str = "spad_account.conf";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpadAccountConfig {
+    pub email: String,
+    pub purchase_id: String,
+    pub license_key: String,
+    pub hardware_id: String,
+    pub is_trial: bool,
+    pub windows_spad_dir: String,
+}
+
+impl Default for SpadAccountConfig {
+    fn default() -> Self {
+        Self::load_or_autodiscover()
+    }
+}
+
+impl SpadAccountConfig {
+    pub fn load_or_autodiscover() -> Self {
+        let mut cfg = Self {
+            email: String::new(),
+            purchase_id: String::new(),
+            license_key: String::new(),
+            hardware_id: String::new(),
+            is_trial: false,
+            windows_spad_dir: Self::detect_windows_spad_profiles_dir().unwrap_or_default(),
+        };
+
+        // Check Wine SPAD.neXt log for Hardware ID if available
+        if let Ok(home) = std::env::var("HOME") {
+            let potential_logs = [
+                format!("{home}/.wine/drive_c/users/steamuser/AppData/Roaming/SPAD.neXt/logs/spad.log"),
+                format!(
+                    "{home}/.wine/drive_c/users/{}/AppData/Roaming/SPAD.neXt/logs/spad.log",
+                    std::env::var("USER").unwrap_or_default()
+                ),
+            ];
+            for log_path in &potential_logs {
+                if let Ok(log_txt) = fs::read_to_string(log_path) {
+                    for line in log_txt.lines() {
+                        if let Some(idx) = line.find("Hardware ID ") {
+                            let rest = &line[idx + "Hardware ID ".len()..];
+                            let parts: Vec<&str> = rest.split('/').collect();
+                            if parts.len() >= 2 && parts[1].len() >= 19 {
+                                cfg.hardware_id = parts[1].trim().to_string();
+                                break;
+                            }
+                        }
+                    }
+                    if !cfg.hardware_id.is_empty() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Override from saved spad_account.conf if present
+        if let Ok(text) = fs::read_to_string(SPAD_ACCOUNT_CONF_FILE) {
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some((k, v)) = trimmed.split_once('=') {
+                    let val = v.trim();
+                    match k.trim() {
+                        "email" if !val.is_empty() => cfg.email = val.to_string(),
+                        "purchase_id" if !val.is_empty() => cfg.purchase_id = val.to_string(),
+                        "license_key" if !val.is_empty() => cfg.license_key = val.to_string(),
+                        "hardware_id" if !val.is_empty() => cfg.hardware_id = val.to_string(),
+                        "is_trial" => cfg.is_trial = val.eq_ignore_ascii_case("true"),
+                        "windows_spad_dir" if !val.is_empty() => {
+                            cfg.windows_spad_dir = val.to_string()
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        } else {
+            let _ = cfg.save();
+        }
+
+        cfg
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let mut out = String::from("# AeroDeck — SPAD.neXt Account & License Configuration\n");
+        out.push_str(&format!("email={}\n", self.email.trim()));
+        out.push_str(&format!("purchase_id={}\n", self.purchase_id.trim()));
+        out.push_str(&format!("license_key={}\n", self.license_key.trim()));
+        out.push_str(&format!("hardware_id={}\n", self.hardware_id.trim()));
+        out.push_str(&format!("is_trial={}\n", self.is_trial));
+        out.push_str(&format!("windows_spad_dir={}\n", self.windows_spad_dir.trim()));
+        fs::write(SPAD_ACCOUNT_CONF_FILE, out)?;
+        Ok(())
+    }
+
+    pub fn detect_windows_spad_profiles_dir() -> Option<String> {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let user = std::env::var("USER").unwrap_or_default();
+        let candidates = [
+            format!("{home}/Documents/SPAD.neXt/profiles"),
+            format!("{home}/.wine/drive_c/users/{user}/Documents/SPAD.neXt/profiles"),
+            format!("{home}/.wine/drive_c/users/steamuser/Documents/SPAD.neXt/profiles"),
+        ];
+        for c in &candidates {
+            if Path::new(c).is_dir() {
+                return Some(c.clone());
+            }
+        }
+        None
+    }
+
+    /// Generates a fresh `X-Token` header for `UpdateSvc2.asmx` and `VvZ20YXgfYzdxxz7zsPs.asmx`
+    /// using the exact `SPAD.net.Base.SPADLicense.GetToken()` algorithm:
+    /// 1. `s1 = "{PURCHASE_ID_OR_TRIAL};{DateTime.UtcNow.ToBinary()};{HardwareID}"`
+    /// 2. `s2 = "{s1};{md5_hex_lower(s1)}"`
+    /// 3. `b64 = Base64(Base64(s2))`
+    /// 4. Swap ASCII case of all letters in `b64`.
+    pub fn generate_x_token(&self) -> String {
+        let id_part = if self.is_trial || self.purchase_id.trim().is_empty() {
+            "TRIAL"
+        } else {
+            self.purchase_id.trim()
+        };
+        let hwid = if self.hardware_id.trim().is_empty() {
+            "0000-0000-0000-0000-0000"
+        } else {
+            self.hardware_id.trim()
+        };
+
+        // .NET DateTime.UtcNow.ToBinary():
+        // 100ns ticks since 0001-01-01 00:00:00 UTC | (1 << 62) for DateTimeKind.Utc
+        let epoch_diff_ticks: i64 = 621_355_968_000_000_000;
+        let now_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as i64;
+        let ticks = epoch_diff_ticks + (now_nanos / 100);
+        let to_binary: i64 = ticks | (1i64 << 62);
+
+        let s1 = format!("{};{};{}", id_part, to_binary, hwid);
+        let md5_hex = md5_lower_hex(s1.as_bytes());
+        let s2 = format!("{};{}", s1, md5_hex);
+
+        let b1 = base64_encode(s2.as_bytes());
+        let b2 = base64_encode(b1.as_bytes());
+
+        b2.chars()
+            .map(|c| {
+                if c.is_ascii_uppercase() {
+                    c.to_ascii_lowercase()
+                } else if c.is_ascii_lowercase() {
+                    c.to_ascii_uppercase()
+                } else {
+                    c
+                }
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnlineSpadProfileEntry {
+    pub snippet_id: i32,
+    pub profile_id: String,
+    pub name: String,
+    pub author: String,
+    pub comment: String,
+    pub aircrafts: Vec<String>,
+    pub devices: Vec<String>,
+    pub features: String,
+    pub dlcount: u32,
+    pub rating: i32,
+    pub published: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowsSpadProfileEntry {
+    pub name: String,
+    pub filename: String,
+    pub source_path: PathBuf,
+    pub devices: Vec<String>,
+    pub description: String,
+    pub last_changed: String,
+    pub already_imported: bool,
+}
+
 pub struct ProfileRepository;
 
 impl ProfileRepository {
@@ -151,52 +341,385 @@ impl ProfileRepository {
         Ok(target)
     }
 
-    /// Queries the live SPAD.neXt SOAP 1.1 repository (`https://update.spadnext.net/service/UpdateSvc2.asmx`)
-    /// using the exact `QueryProfiles` / `GetDeviceProfiles` envelope from `SPAD.neXt.XmlSerializers.dll`.
-    pub fn query_spad_online_soap(
-        device_id_or_provider: &str,
-        scope_id: i32,
-        x_token: Option<&str>,
-    ) -> Result<String> {
+    /// Queries the live SPAD.neXt Online Repository (`https://update.spadnext.net/service/UpdateSvc2.asmx`)
+    /// using the automatically generated `X-Token` from `SpadAccountConfig` and parses all `<SnippetBase>` profiles.
+    pub fn fetch_online_spad_profiles(
+        account: &SpadAccountConfig,
+    ) -> Result<Vec<OnlineSpadProfileEntry>> {
+        let x_token = account.generate_x_token();
         let soap_body = format!(
             r#"<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
     <QueryProfiles xmlns="{}">
-      <providers><string>{}</string></providers>
-      <scopeid>{}</scopeid>
+      <providers>
+        <string>SIMCONNECT</string>
+        <string>MSFS</string>
+        <string>LVAR</string>
+        <string>FSUIPC</string>
+        <string>PMDG737</string>
+        <string>PMDG747</string>
+        <string>PMDG777</string>
+        <string>PMDGNG3</string>
+        <string>Q400</string>
+      </providers>
+      <maxVersion>100</maxVersion>
     </QueryProfiles>
   </soap:Body>
 </soap:Envelope>"#,
-            SPAD_SOAP_NAMESPACE, device_id_or_provider, scope_id
+            SPAD_SOAP_NAMESPACE
         );
 
-        let mut cmd = Command::new("curl");
-        cmd.arg("-s")
+        let output = Command::new("curl")
+            .arg("-s")
+            .arg("--max-time")
+            .arg("20")
             .arg("-X")
             .arg("POST")
             .arg(SPAD_ONLINE_SOAP_URL)
             .arg("-H")
             .arg("Content-Type: text/xml; charset=utf-8")
             .arg("-H")
-            .arg(format!("User-Agent: {}", SPAD_USER_AGENT))
+            .arg("User-Agent: Mozilla/4.0 (compatible; MSIE 6.0; MS Web Services Client Protocol 4.0.30319.42000)")
             .arg("-H")
-            .arg("SOAPAction: \"http://fsgs.com/schemas/IUpdateSvc/QueryProfiles\"");
+            .arg("SOAPAction: \"http://fsgs.com/schemas/IUpdateSvc/QueryProfiles\"")
+            .arg("-H")
+            .arg(format!("X-Token: {}", x_token))
+            .arg("-d")
+            .arg(&soap_body)
+            .output()
+            .context("Failed to execute curl for SPAD.neXt QueryProfiles")?;
 
-        if let Some(tok) = x_token {
-            if !tok.trim().is_empty() {
-                cmd.arg("-H").arg(format!("X-Token: {}", tok.trim()));
+        let resp = String::from_utf8_lossy(&output.stdout).to_string();
+        if resp.contains("<faultstring>") {
+            let fault = extract_xml_tag(&resp, "faultstring").unwrap_or_else(|| "SOAP Fault".to_string());
+            anyhow::bail!("SPAD.neXt Online Service returned fault: {}", fault);
+        }
+
+        let mut results = Vec::new();
+        for chunk in resp.split("<SnippetBase>").skip(1) {
+            let block = match chunk.split("</SnippetBase>").next() {
+                Some(b) => b,
+                None => continue,
+            };
+            let id = extract_xml_tag(block, "id")
+                .and_then(|s| s.parse::<i32>().ok())
+                .unwrap_or(0);
+            if id <= 0 {
+                continue;
+            }
+            let name = unescape_xml_entities(&extract_xml_tag(block, "name").unwrap_or_default());
+            if name.trim().is_empty() {
+                continue;
+            }
+            let author = unescape_xml_entities(
+                &extract_xml_tag(block, "author").unwrap_or_else(|| "Unknown".to_string()),
+            );
+            let comment = unescape_xml_entities(&extract_xml_tag(block, "comment").unwrap_or_default());
+            let features = extract_xml_tag(block, "features").unwrap_or_default();
+            let dlcount = extract_xml_tag(block, "dlcount")
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0);
+            let rating = extract_xml_tag(block, "rating")
+                .and_then(|s| s.parse::<i32>().ok())
+                .unwrap_or(0);
+            let published = extract_xml_tag(block, "published")
+                .unwrap_or_default()
+                .split('T')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            let version = extract_xml_tag(block, "version").unwrap_or_else(|| "1.0".to_string());
+            let profile_id = extract_xml_tag(block, "profileID").unwrap_or_default();
+
+            let aircrafts_raw = unescape_xml_entities(&extract_xml_tag(block, "aircrafts").unwrap_or_default());
+            let aircrafts: Vec<String> = aircrafts_raw
+                .split("##")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            let mut devices = Vec::new();
+            if let Some(devs_block) = extract_xml_tag(block, "devices") {
+                for d_part in devs_block.split("<string>").skip(1) {
+                    if let Some(d_val) = d_part.split("</string>").next() {
+                        let clean = d_val.trim().to_uppercase();
+                        if !clean.is_empty() {
+                            devices.push(clean);
+                        }
+                    }
+                }
+            }
+
+            results.push(OnlineSpadProfileEntry {
+                snippet_id: id,
+                profile_id,
+                name,
+                author,
+                comment,
+                aircrafts,
+                devices,
+                features,
+                dlcount,
+                rating,
+                published,
+                version,
+            });
+        }
+
+        // Sort by download count descending
+        results.sort_by(|a, b| b.dlcount.cmp(&a.dlcount));
+        Ok(results)
+    }
+
+    /// Downloads a specific online profile from `UpdateSvc2.asmx` via `GetSnippet2(snippetID, 100)`
+    /// using the automatically generated `X-Token` and saves it into `./profiles/<sanitized_name>.xml`.
+    pub fn download_online_spad_snippet(
+        snippet_id: i32,
+        profile_name: &str,
+        account: &SpadAccountConfig,
+    ) -> Result<PathBuf> {
+        let x_token = account.generate_x_token();
+        let soap_body = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <GetSnippet2 xmlns="{}">
+      <snippetID>{}</snippetID>
+      <maxVersion>100</maxVersion>
+    </GetSnippet2>
+  </soap:Body>
+</soap:Envelope>"#,
+            SPAD_SOAP_NAMESPACE, snippet_id
+        );
+
+        let output = Command::new("curl")
+            .arg("-s")
+            .arg("--max-time")
+            .arg("20")
+            .arg("-X")
+            .arg("POST")
+            .arg(SPAD_ONLINE_SOAP_URL)
+            .arg("-H")
+            .arg("Content-Type: text/xml; charset=utf-8")
+            .arg("-H")
+            .arg("User-Agent: Mozilla/4.0 (compatible; MSIE 6.0; MS Web Services Client Protocol 4.0.30319.42000)")
+            .arg("-H")
+            .arg("SOAPAction: \"http://fsgs.com/schemas/IUpdateSvc/GetSnippet2\"")
+            .arg("-H")
+            .arg(format!("X-Token: {}", x_token))
+            .arg("-d")
+            .arg(&soap_body)
+            .output()
+            .context("Failed to execute curl for SPAD.neXt GetSnippet2")?;
+
+        let resp = String::from_utf8_lossy(&output.stdout).to_string();
+        if resp.contains("<faultstring>") {
+            let fault = extract_xml_tag(&resp, "faultstring").unwrap_or_else(|| "SOAP Fault".to_string());
+            anyhow::bail!("SPAD.neXt GetSnippet2 returned fault: {}", fault);
+        }
+
+        let data_raw = extract_xml_tag(&resp, "Data")
+            .context("SPAD.neXt GetSnippet2 response did not contain a <Data> element")?;
+        let xml_content = unescape_xml_entities(&data_raw);
+
+        if !xml_content.contains("<Profile") && !xml_content.contains("<Device") {
+            anyhow::bail!("Downloaded snippet #{} did not contain valid SPAD.neXt <Profile> XML", snippet_id);
+        }
+
+        let profiles_dir = Path::new("profiles");
+        if !profiles_dir.exists() {
+            fs::create_dir_all(profiles_dir)?;
+        }
+
+        let safe_stem: String = profile_name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>()
+            .trim()
+            .replace(' ', "_");
+        let filename = if safe_stem.is_empty() {
+            format!("spad_online_{}.xml", snippet_id)
+        } else {
+            format!("spad_online_{}_{}.xml", snippet_id, safe_stem)
+        };
+
+        let target = profiles_dir.join(filename);
+        fs::write(&target, xml_content.as_bytes())
+            .with_context(|| format!("Failed to write downloaded SPAD profile to {:?}", target))?;
+        Ok(target)
+    }
+
+    /// Scans the user's Windows SPAD.neXt profile directory (e.g. `/mnt/data/Documents/Backups/.../SPAD.neXt/profiles`)
+    /// and returns all discovered `.xml` / `.spadprofile` files.
+    pub fn discover_windows_spad_profiles(custom_dir: Option<&str>) -> Vec<WindowsSpadProfileEntry> {
+        let mut search_dirs = Vec::new();
+        if let Some(d) = custom_dir {
+            if !d.trim().is_empty() {
+                search_dirs.push(PathBuf::from(d.trim()));
+            }
+        }
+        if let Some(auto_d) = SpadAccountConfig::detect_windows_spad_profiles_dir() {
+            let p = PathBuf::from(auto_d);
+            if !search_dirs.contains(&p) {
+                search_dirs.push(p);
             }
         }
 
-        cmd.arg("-d").arg(&soap_body);
-        let output = cmd.output().context("Failed to execute curl for SOAP query")?;
-        let resp = String::from_utf8_lossy(&output.stdout).to_string();
-        if resp.contains("<faultstring>NOT_AUTHORIZED</faultstring>") {
-            anyhow::bail!(
-                "update.spadnext.net returned SOAP Fault: NOT_AUTHORIZED (UpdateSvc2.asmx requires an active SPAD.neXt subscription X-Token header). Use the Built-in Device-Categorized Repository below for instant license-free profile downloads!"
-            );
+        let mut entries = Vec::new();
+        for dir in search_dirs {
+            let Ok(read_dir) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for item in read_dir.flatten() {
+                let p = item.path();
+                if !p.is_file() {
+                    continue;
+                }
+                let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+                if !ext.eq_ignore_ascii_case("xml") && !ext.eq_ignore_ascii_case("spadprofile") {
+                    continue;
+                }
+                let fname = match p.file_name().and_then(|s| s.to_str()) {
+                    Some(f) => f.to_string(),
+                    None => continue,
+                };
+                let stem = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&fname)
+                    .to_string();
+
+                let content = fs::read_to_string(&p).unwrap_or_default();
+                let mut devs = Vec::new();
+                for dev_chunk in content.split("<Device ").skip(1) {
+                    if let Some(tag_end) = dev_chunk.find('>') {
+                        let attrs = &dev_chunk[..tag_end];
+                        let vid = extract_xml_attr(attrs, "VendorID")
+                            .unwrap_or_default()
+                            .trim_start_matches("0x")
+                            .trim_start_matches("0X")
+                            .to_uppercase();
+                        let pid = extract_xml_attr(attrs, "ProductID")
+                            .unwrap_or_default()
+                            .trim_start_matches("0x")
+                            .trim_start_matches("0X")
+                            .to_uppercase();
+                        if !vid.is_empty() && !pid.is_empty() {
+                            let vp = format!("{}:{}", vid, pid);
+                            if !devs.contains(&vp) {
+                                devs.push(vp);
+                            }
+                        }
+                    }
+                }
+                let last_changed = extract_xml_tag(&content, "LastChanged")
+                    .unwrap_or_default()
+                    .split('T')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                let desc = extract_xml_tag(&content, "Description").unwrap_or_default();
+                let dest_path = Path::new("profiles").join(&fname);
+
+                entries.push(WindowsSpadProfileEntry {
+                    name: stem,
+                    filename: fname,
+                    source_path: p,
+                    devices: devs,
+                    description: desc,
+                    last_changed,
+                    already_imported: dest_path.exists(),
+                });
+            }
         }
+
+        entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        entries
+    }
+
+    /// Imports a Windows SPAD.neXt profile into `./profiles/<filename>`
+    pub fn import_windows_spad_profile(source_path: &Path) -> Result<PathBuf> {
+        let profiles_dir = Path::new("profiles");
+        if !profiles_dir.exists() {
+            fs::create_dir_all(profiles_dir)?;
+        }
+        let fname = source_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("imported_spad_profile.xml");
+        let target = profiles_dir.join(fname);
+        fs::copy(source_path, &target).with_context(|| {
+            format!(
+                "Failed to copy Windows SPAD profile {:?} to {:?}",
+                source_path, target
+            )
+        })?;
+        Ok(target)
+    }
+
+    /// Automatically imports all discovered Windows SPAD.neXt profiles into `./profiles/` on startup
+    pub fn auto_import_windows_profiles_on_startup(custom_dir: Option<&str>) -> usize {
+        let discovered = Self::discover_windows_spad_profiles(custom_dir);
+        let mut count = 0;
+        for entry in discovered {
+            let dest = Path::new("profiles").join(&entry.filename);
+            if !dest.exists() && Self::import_windows_spad_profile(&entry.source_path).is_ok() {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Queries the live SPAD.neXt SOAP 1.1 repository (`https://update.spadnext.net/service/UpdateSvc2.asmx`)
+    /// using the exact `QueryProfiles` / `GetDeviceProfiles` envelope from `SPAD.neXt.XmlSerializers.dll`.
+    pub fn query_spad_online_soap(
+        device_id_or_provider: &str,
+        _scope_id: i32,
+        x_token: Option<&str>,
+    ) -> Result<String> {
+        let account = SpadAccountConfig::load_or_autodiscover();
+        let token = match x_token {
+            Some(t) if !t.trim().is_empty() => t.trim().to_string(),
+            _ => account.generate_x_token(),
+        };
+        let soap_body = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <QueryProfiles xmlns="{}">
+      <providers><string>{}</string></providers>
+      <maxVersion>100</maxVersion>
+    </QueryProfiles>
+  </soap:Body>
+</soap:Envelope>"#,
+            SPAD_SOAP_NAMESPACE, device_id_or_provider
+        );
+
+        let output = Command::new("curl")
+            .arg("-s")
+            .arg("-X")
+            .arg("POST")
+            .arg(SPAD_ONLINE_SOAP_URL)
+            .arg("-H")
+            .arg("Content-Type: text/xml; charset=utf-8")
+            .arg("-H")
+            .arg("User-Agent: Mozilla/4.0 (compatible; MSIE 6.0; MS Web Services Client Protocol 4.0.30319.42000)")
+            .arg("-H")
+            .arg("SOAPAction: \"http://fsgs.com/schemas/IUpdateSvc/QueryProfiles\"")
+            .arg("-H")
+            .arg(format!("X-Token: {}", token))
+            .arg("-d")
+            .arg(&soap_body)
+            .output()
+            .context("Failed to execute curl for SOAP query")?;
+        let resp = String::from_utf8_lossy(&output.stdout).to_string();
         Ok(resp)
     }
 
@@ -1211,3 +1734,140 @@ const PROFILE_SAITEK_STACK: &str = r#"<?xml version="1.0" encoding="utf-8"?>
   </Devices>
 </Profile>
 "#;
+
+fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&close)?;
+    Some(xml[start..start + end].to_string())
+}
+
+fn extract_xml_attr(attrs: &str, key: &str) -> Option<String> {
+    let pat = format!("{}=\"", key);
+    let start = attrs.find(&pat)? + pat.len();
+    let end = attrs[start..].find('"')?;
+    Some(attrs[start..start + end].to_string())
+}
+
+fn unescape_xml_entities(input: &str) -> String {
+    input
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#xD;", "\r")
+        .replace("&#xA;", "\n")
+        .replace("&amp;", "&")
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+
+        out.push(TABLE[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(TABLE[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// Pure-Rust RFC 1321 MD5 digest returning 32-char lowercase hex string
+/// matching `System.SPADSystemExtensions.GetMD5(string)`.
+fn md5_lower_hex(input: &[u8]) -> String {
+    const S: [u32; 64] = [
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20,
+        5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    ];
+    const K: [u32; 64] = [
+        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613,
+        0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193,
+        0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d,
+        0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122,
+        0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
+        0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244,
+        0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
+        0xeb86d391,
+    ];
+
+    let mut a0: u32 = 0x67452301;
+    let mut b0: u32 = 0xefcdab89;
+    let mut c0: u32 = 0x98badcfe;
+    let mut d0: u32 = 0x10325476;
+
+    let bit_len = (input.len() as u64) * 8;
+    let mut msg = input.to_vec();
+    msg.push(0x80);
+    while (msg.len() % 64) != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_le_bytes());
+
+    for chunk in msg.chunks_exact(64) {
+        let mut m = [0u32; 16];
+        for (i, word) in chunk.chunks_exact(4).enumerate() {
+            m[i] = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+        }
+
+        let mut a = a0;
+        let mut b = b0;
+        let mut c = c0;
+        let mut d = d0;
+
+        for i in 0..64 {
+            let (f, g) = if i < 16 {
+                ((b & c) | (!b & d), i)
+            } else if i < 32 {
+                ((d & b) | (!d & c), (5 * i + 1) % 16)
+            } else if i < 48 {
+                (b ^ c ^ d, (3 * i + 5) % 16)
+            } else {
+                (c ^ (b | !d), (7 * i) % 16)
+            };
+            let temp = d;
+            d = c;
+            c = b;
+            b = b.wrapping_add(
+                a.wrapping_add(f)
+                    .wrapping_add(K[i])
+                    .wrapping_add(m[g])
+                    .rotate_left(S[i]),
+            );
+            a = temp;
+        }
+
+        a0 = a0.wrapping_add(a);
+        b0 = b0.wrapping_add(b);
+        c0 = c0.wrapping_add(c);
+        d0 = d0.wrapping_add(d);
+    }
+
+    let mut digest = [0u8; 16];
+    digest[0..4].copy_from_slice(&a0.to_le_bytes());
+    digest[4..8].copy_from_slice(&b0.to_le_bytes());
+    digest[8..12].copy_from_slice(&c0.to_le_bytes());
+    digest[12..16].copy_from_slice(&d0.to_le_bytes());
+
+    let mut hex = String::with_capacity(32);
+    for b in digest {
+        hex.push_str(&format!("{:02x}", b));
+    }
+    hex
+}

@@ -190,6 +190,13 @@ impl SpadLinxApp {
                 GuiEvent::OnlineProfilesQueried(resp) => {
                     self.aircraft_profiles_state.online_soap_response = resp;
                 }
+                GuiEvent::OnlineSpadCatalogLoaded(entries) => {
+                    self.aircraft_profiles_state.is_fetching_online = false;
+                    self.aircraft_profiles_state.online_catalog = entries;
+                }
+                GuiEvent::WindowsSpadProfilesUpdated(win_profs) => {
+                    self.aircraft_profiles_state.windows_profiles = win_profs;
+                }
                 GuiEvent::DevicesUpdated(devs) => {
                     self.devices = devs;
                 }

@@ -23,6 +23,27 @@ pub struct SpadProfile {
 
     #[serde(rename = "Devices", default)]
     pub devices: Option<DeviceList>,
+
+    #[serde(rename = "ProfileInformation", default)]
+    pub profile_info: Option<ProfileInformation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProfileInformation {
+    #[serde(rename = "@ProfileID", default)]
+    pub profile_id: Option<String>,
+
+    #[serde(rename = "@Version", default)]
+    pub version: Option<String>,
+
+    #[serde(rename = "Author", default)]
+    pub author: Option<String>,
+
+    #[serde(rename = "Description", default)]
+    pub description: Option<String>,
+
+    #[serde(rename = "LastChanged", default)]
+    pub last_changed: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -183,13 +204,13 @@ pub enum EventConditionItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventConditionSimple {
-    #[serde(rename = "@Target")]
+    #[serde(rename = "@Target", alias = "@ConditionValueSource", default)]
     pub target: String,
 
-    #[serde(rename = "@Comparator", default)]
-    pub comparator: Option<String>, // Equals, Less, Greater, Unequal, Mask, etc.
+    #[serde(rename = "@Comparator", alias = "@ConditionComparator", default)]
+    pub comparator: Option<String>, // Equals, Less, Greater, Unequal, Mask, Range, etc.
 
-    #[serde(rename = "@Value", default)]
+    #[serde(rename = "@Value", alias = "@ConditionTargetValue", default)]
     pub value: Option<String>,
 }
 
@@ -209,6 +230,9 @@ pub struct EventActionsList {
 pub enum EventActionItem {
     #[serde(rename = "EventActionControl")]
     Control(EventActionControl),
+
+    #[serde(rename = "EventActionCustomAxis")]
+    CustomAxis(EventActionCustomAxis),
 
     #[serde(rename = "EventActionChangeValue")]
     ChangeValue(EventActionChangeValue),
@@ -234,7 +258,7 @@ pub enum EventActionItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventActionControl {
-    #[serde(rename = "@Target")]
+    #[serde(rename = "@Target", alias = "@TargetDataDefinition", default)]
     pub target: String, // e.g. "SIMCONNECT:AP_ALT_VAR_INC"
 
     #[serde(rename = "@Value", default)]
@@ -242,8 +266,20 @@ pub struct EventActionControl {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventActionCustomAxis {
+    #[serde(rename = "@Target", alias = "@TargetDataDefinition", default)]
+    pub target: String, // e.g. "SIMCONNECT:THROTTLE1_AXIS_SET_EX1"
+
+    #[serde(rename = "@Value", default)]
+    pub value: Option<String>,
+
+    #[serde(rename = "Options", default)]
+    pub options: Option<ProfileOptionsList>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventActionChangeValue {
-    #[serde(rename = "@Target")]
+    #[serde(rename = "@Target", alias = "@TargetDataDefinition", default)]
     pub target: String, // e.g. "LVAR:A32NX_AUTOPILOT_1_ACTIVE" or "LOCAL:FOO"
 
     #[serde(rename = "@Operation", default)]
@@ -288,6 +324,70 @@ pub struct EventActionLED {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventActionCommand {
-    #[serde(rename = "@Command")]
+    #[serde(rename = "@Command", default)]
     pub command: String,
+}
+
+/// Checks if a SPAD.neXt `BoundTo` string matches a Linux evdev input name
+/// (e.g. Windows SPAD `X_AXIS` <-> Linux `AXIS_X`, `Z_AXIS` <-> `AXIS_Z`, etc.)
+pub fn bound_to_matches(profile_bound: &str, input_name: &str) -> bool {
+    if profile_bound.eq_ignore_ascii_case(input_name) {
+        return true;
+    }
+    let norm = |s: &str| -> String {
+        match s.to_uppercase().as_str() {
+            "X_AXIS" | "AXIS_X" => "AXIS_X".to_string(),
+            "Y_AXIS" | "AXIS_Y" => "AXIS_Y".to_string(),
+            "Z_AXIS" | "AXIS_Z" => "AXIS_Z".to_string(),
+            "RX_AXIS" | "AXIS_RX" => "AXIS_RX".to_string(),
+            "RY_AXIS" | "AXIS_RY" => "AXIS_RY".to_string(),
+            "RZ_AXIS" | "AXIS_RZ" => "AXIS_RZ".to_string(),
+            "SLIDER_0" | "AXIS_THROTTLE" => "AXIS_THROTTLE".to_string(),
+            "SLIDER_1" | "AXIS_RUDDER" => "AXIS_RUDDER".to_string(),
+            other => other.to_string(),
+        }
+    };
+    norm(profile_bound) == norm(input_name)
+}
+
+impl DeviceProfile {
+    /// Checks if this `<Device>` entry matches a connected hardware ID/name or VID/PID
+    pub fn matches_device_id(&self, device_id: &str) -> bool {
+        if self.id.as_deref() == Some(device_id)
+            || self.product_id.as_deref() == Some(device_id)
+            || self.name.as_deref() == Some(device_id)
+        {
+            return true;
+        }
+        let clean_hex = |s: &str| {
+            s.trim()
+                .trim_start_matches("0x")
+                .trim_start_matches("0X")
+                .to_lowercase()
+        };
+        if let (Some(vid), Some(pid)) = (&self.vendor_id, &self.product_id) {
+            let v = clean_hex(vid);
+            let p = clean_hex(pid);
+            let dev_lower = device_id.to_lowercase();
+            if dev_lower.contains(&format!("{}_{}", v, p))
+                || dev_lower.contains(&format!("{}:{}", v, p))
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn matches_vid_pid(&self, vendor_id: u16, product_id: u16) -> bool {
+        let parse_hex = |s: &str| -> Option<u16> {
+            let trimmed = s.trim().trim_start_matches("0x").trim_start_matches("0X");
+            u16::from_str_radix(trimmed, 16).ok()
+        };
+        if let (Some(v_str), Some(p_str)) = (&self.vendor_id, &self.product_id) {
+            if let (Some(v), Some(p)) = (parse_hex(v_str), parse_hex(p_str)) {
+                return v == vendor_id && p == product_id;
+            }
+        }
+        false
+    }
 }

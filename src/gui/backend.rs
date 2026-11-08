@@ -10,8 +10,9 @@ use crate::bridge::{SpadLvarBridge, CALC_RET_DOUBLE};
 use crate::hardware::device::DeviceEvent;
 use crate::hardware::enumerator::{ConnectedDevice, DeviceEnumerator};
 use crate::profile::{
-    AircraftAssignmentManager, AircraftScanner, DiscoveredAircraft,
-    ProfileExecutor, ProfileParser, ProfileRepository, SpadProfile,
+    AircraftAssignmentManager, AircraftScanner, DiscoveredAircraft, OnlineSpadProfileEntry,
+    ProfileExecutor, ProfileParser, ProfileRepository, SpadAccountConfig, SpadProfile,
+    WindowsSpadProfileEntry,
 };
 use crate::simconnect::SimConnectClient;
 
@@ -30,6 +31,8 @@ pub enum GuiEvent {
         path: String,
     },
     OnlineProfilesQueried(String),
+    OnlineSpadCatalogLoaded(Vec<OnlineSpadProfileEntry>),
+    WindowsSpadProfilesUpdated(Vec<WindowsSpadProfileEntry>),
     DevicesUpdated(Vec<ConnectedDevice>),
     InputTriggered {
         device: String,
@@ -85,6 +88,24 @@ pub enum GuiCommand {
         device_vid: String,
         device_pid: String,
         license_token: Option<String>,
+    },
+    FetchOnlineSpadCatalog {
+        account: SpadAccountConfig,
+    },
+    DownloadOnlineSpadSnippet {
+        snippet_id: i32,
+        profile_name: String,
+        account: SpadAccountConfig,
+        activate_now: bool,
+        bind_to_aircraft: Option<String>,
+    },
+    ImportWindowsSpadProfile {
+        source_path: PathBuf,
+        activate_now: bool,
+        bind_to_aircraft: Option<String>,
+    },
+    ImportAllWindowsSpadProfiles {
+        custom_dir: Option<String>,
     },
     SimulateInput { device: String, bound_to: String, action: String },
     LoadProfile(PathBuf),
@@ -150,6 +171,38 @@ async fn run_backend_loop(
 
     // 2. Ensure Built-in Categorized Device & Aircraft Profiles are installed in ./profiles/
     ProfileRepository::ensure_builtin_profiles_on_disk();
+    let imported_win = ProfileRepository::auto_import_windows_profiles_on_startup(None);
+    if imported_win > 0 {
+        let _ = event_tx.send(GuiEvent::Log {
+            timestamp: chrono_now(),
+            level: "INFO".to_string(),
+            text: format!(
+                "[AUTO-IMPORT] Imported {} Windows SPAD.neXt profiles into ./profiles/",
+                imported_win
+            ),
+        });
+    }
+    let win_profiles = ProfileRepository::discover_windows_spad_profiles(None);
+    let _ = event_tx.send(GuiEvent::WindowsSpadProfilesUpdated(win_profiles));
+
+    // Spawn non-blocking background fetch of the live SPAD.neXt Online Repository
+    let bg_tx = event_tx.clone();
+    std::thread::spawn(move || {
+        let acct = SpadAccountConfig::load_or_autodiscover();
+        if let Ok(online) = ProfileRepository::fetch_online_spad_profiles(&acct) {
+            let _ = bg_tx.send(GuiEvent::Log {
+                timestamp: chrono_now(),
+                level: "INFO".to_string(),
+                text: format!(
+                    "[SPAD.neXt ONLINE] Loaded {} live profiles from update.spadnext.net using license {} (Order #{})",
+                    online.len(),
+                    acct.email,
+                    acct.purchase_id
+                ),
+            });
+            let _ = bg_tx.send(GuiEvent::OnlineSpadCatalogLoaded(online));
+        }
+    });
 
     // 3. Discover Installed MSFS Aircraft and Load Profile Assignments
     let mut discovered_aircrafts = AircraftScanner::discover_installed_aircraft(None);
@@ -551,6 +604,167 @@ async fn run_backend_loop(
                                 });
                             }
                         }
+                    }
+                    Some(GuiCommand::FetchOnlineSpadCatalog { account }) => {
+                        let _ = account.save();
+                        let bg_tx = event_tx.clone();
+                        std::thread::spawn(move || {
+                            match ProfileRepository::fetch_online_spad_profiles(&account) {
+                                Ok(entries) => {
+                                    let _ = bg_tx.send(GuiEvent::Log {
+                                        timestamp: chrono_now(),
+                                        level: "INFO".to_string(),
+                                        text: format!(
+                                            "Fetched {} live profiles from update.spadnext.net (X-Token auto-generated for {})",
+                                            entries.len(),
+                                            account.email
+                                        ),
+                                    });
+                                    let _ = bg_tx.send(GuiEvent::OnlineSpadCatalogLoaded(entries));
+                                }
+                                Err(e) => {
+                                    let _ = bg_tx.send(GuiEvent::Error(format!(
+                                        "Failed to query SPAD.neXt Online Repository: {}",
+                                        e
+                                    )));
+                                }
+                            }
+                        });
+                    }
+                    Some(GuiCommand::DownloadOnlineSpadSnippet {
+                        snippet_id,
+                        profile_name,
+                        account,
+                        activate_now,
+                        bind_to_aircraft,
+                    }) => {
+                        match ProfileRepository::download_online_spad_snippet(
+                            snippet_id,
+                            &profile_name,
+                            &account,
+                        ) {
+                            Ok(path) => {
+                                let rel_path = path
+                                    .file_name()
+                                    .map(|f| format!("profiles/{}", f.to_string_lossy()))
+                                    .unwrap_or_else(|| path.to_string_lossy().to_string());
+                                if let Some(ref ac_title) = bind_to_aircraft {
+                                    let _ = assignments.assign_aircraft(ac_title, &rel_path);
+                                }
+                                assignments.import_from_xml_profiles();
+                                let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
+                                    aircrafts: discovered_aircrafts.clone(),
+                                    assignments: assignments.clone(),
+                                });
+                                let _ = event_tx.send(GuiEvent::Log {
+                                    timestamp: chrono_now(),
+                                    level: "INFO".to_string(),
+                                    text: format!(
+                                        "Downloaded SPAD.neXt Online Profile #{} '{}' -> {}",
+                                        snippet_id, profile_name, rel_path
+                                    ),
+                                });
+                                if activate_now {
+                                    if let Ok(mut prof) = ProfileParser::parse_file(&path) {
+                                        if prof.name.is_none() {
+                                            prof.name = Some(profile_name.clone());
+                                        }
+                                        let prof_name = prof
+                                            .name
+                                            .clone()
+                                            .unwrap_or_else(|| profile_name.clone());
+                                        current_profile_path = Some(rel_path.clone());
+                                        active_profile = Some(Arc::new(Mutex::new(prof.clone())));
+                                        if let (Some(ref sc), Some(ref br)) = (&simconnect, &bridge)
+                                        {
+                                            executor = Some(Arc::new(ProfileExecutor::new(
+                                                prof,
+                                                sc.clone(),
+                                                br.clone(),
+                                            )));
+                                        }
+                                        let _ = event_tx.send(GuiEvent::ProfileLoaded {
+                                            name: prof_name,
+                                            path: rel_path,
+                                        });
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(GuiEvent::Error(format!(
+                                    "Failed to download online profile #{}: {}",
+                                    snippet_id, e
+                                )));
+                            }
+                        }
+                    }
+                    Some(GuiCommand::ImportWindowsSpadProfile {
+                        source_path,
+                        activate_now,
+                        bind_to_aircraft,
+                    }) => {
+                        match ProfileRepository::import_windows_spad_profile(&source_path) {
+                            Ok(path) => {
+                                let rel_path = path
+                                    .file_name()
+                                    .map(|f| format!("profiles/{}", f.to_string_lossy()))
+                                    .unwrap_or_else(|| path.to_string_lossy().to_string());
+                                if let Some(ref ac_title) = bind_to_aircraft {
+                                    let _ = assignments.assign_aircraft(ac_title, &rel_path);
+                                }
+                                let win_profiles = ProfileRepository::discover_windows_spad_profiles(None);
+                                let _ = event_tx.send(GuiEvent::WindowsSpadProfilesUpdated(win_profiles));
+                                let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
+                                    aircrafts: discovered_aircrafts.clone(),
+                                    assignments: assignments.clone(),
+                                });
+                                if activate_now {
+                                    if let Ok(prof) = ProfileParser::parse_file(&path) {
+                                        let prof_name = prof
+                                            .name
+                                            .clone()
+                                            .unwrap_or_else(|| rel_path.clone());
+                                        current_profile_path = Some(rel_path.clone());
+                                        active_profile = Some(Arc::new(Mutex::new(prof.clone())));
+                                        if let (Some(ref sc), Some(ref br)) = (&simconnect, &bridge)
+                                        {
+                                            executor = Some(Arc::new(ProfileExecutor::new(
+                                                prof,
+                                                sc.clone(),
+                                                br.clone(),
+                                            )));
+                                        }
+                                        let _ = event_tx.send(GuiEvent::ProfileLoaded {
+                                            name: prof_name,
+                                            path: rel_path,
+                                        });
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(GuiEvent::Error(format!(
+                                    "Failed to import Windows SPAD profile: {}",
+                                    e
+                                )));
+                            }
+                        }
+                    }
+                    Some(GuiCommand::ImportAllWindowsSpadProfiles { custom_dir }) => {
+                        let count = ProfileRepository::auto_import_windows_profiles_on_startup(
+                            custom_dir.as_deref(),
+                        );
+                        let win_profiles =
+                            ProfileRepository::discover_windows_spad_profiles(custom_dir.as_deref());
+                        let _ = event_tx.send(GuiEvent::WindowsSpadProfilesUpdated(win_profiles));
+                        let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
+                            aircrafts: discovered_aircrafts.clone(),
+                            assignments: assignments.clone(),
+                        });
+                        let _ = event_tx.send(GuiEvent::Log {
+                            timestamp: chrono_now(),
+                            level: "INFO".to_string(),
+                            text: format!("Imported {} Windows SPAD.neXt profiles into ./profiles/", count),
+                        });
                     }
                     Some(GuiCommand::SimulateInput { device, bound_to, action }) => {
                         let _ = event_tx.send(GuiEvent::InputTriggered {

@@ -7,7 +7,10 @@ use crate::gui::app::LiveAxisState;
 use crate::gui::backend::GuiCommand;
 use crate::gui::presets::{COMMON_CALCULATOR_CODES, SIMCONNECT_AXIS_PRESETS, SIMCONNECT_PRESETS};
 use crate::gui::theme::AeroTheme;
-use crate::gui::widgets::{ui_card, ui_clickable_card, ui_elevated_card, ui_smooth_axis_bar, ui_tag_pill};
+use crate::gui::widgets::{
+    ui_card, ui_clickable_card, ui_clickable_row_card, ui_elevated_card, ui_smooth_axis_bar,
+    ui_tag_pill,
+};
 use crate::hardware::enumerator::ConnectedDevice;
 use crate::profile::schema::{
     EventActionControl, EventActionItem, EventActionScript, EventConditionItem,
@@ -435,7 +438,7 @@ fn render_input_list_column(
                             });
                         };
 
-                        let (_, resp) = ui_clickable_card(ui, theme, is_selected, row_builder);
+                        let (_, resp) = ui_clickable_row_card(ui, theme, is_selected, row_builder);
                         if resp.clicked() {
                             state.selected_input = (*input_id).clone();
                             state.show_add_action_form = false;

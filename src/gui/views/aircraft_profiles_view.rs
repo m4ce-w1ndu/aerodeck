@@ -6,7 +6,8 @@ use tokio::sync::mpsc;
 use crate::gui::backend::GuiCommand;
 use crate::gui::theme::AeroTheme;
 use crate::gui::widgets::{
-    ui_card, ui_clickable_card, ui_elevated_card, ui_status_badge, ui_tag_pill,
+    ui_card, ui_clickable_card, ui_clickable_row_card, ui_elevated_card, ui_status_badge,
+    ui_tag_pill,
 };
 use crate::hardware::enumerator::ConnectedDevice;
 use crate::profile::schema::{DeviceProfile, SpadProfile};
@@ -394,20 +395,18 @@ fn render_profiles_list_panel(
                     .unwrap_or((0, 0));
 
                 let card_builder = |ui: &mut Ui| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(
                             RichText::new(&prof_name)
                                 .color(if is_selected { theme.accent } else { theme.text_primary })
                                 .strong(),
                         );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if is_active {
-                                ui_tag_pill(ui, "ACTIVE", theme.success, theme);
-                            }
-                            if is_fallback {
-                                ui_tag_pill(ui, "FALLBACK", theme.warning, theme);
-                            }
-                        });
+                        if is_active {
+                            ui_tag_pill(ui, "ACTIVE", theme.success, theme);
+                        }
+                        if is_fallback {
+                            ui_tag_pill(ui, "FALLBACK", theme.warning, theme);
+                        }
                     });
 
                     ui.add_space(2.0);
@@ -443,7 +442,7 @@ fn render_profiles_list_panel(
                     });
                 };
 
-                let (_, resp) = ui_clickable_card(ui, theme, is_selected, card_builder);
+                let (_, resp) = ui_clickable_row_card(ui, theme, is_selected, card_builder);
 
                 if resp.clicked() {
                     state.selected_profile_path = Some(p_path.clone());
@@ -494,29 +493,35 @@ fn render_profile_details_panel(
     // 1. HEADER CARD: Profile Name & Core Actions
     ui_card(ui, theme, |ui| {
         // Row 1: Profile Name Heading & Activation Status
-        ui.horizontal(|ui| {
-            if state.is_renaming {
-                ui.label(RichText::new("Rename:").color(theme.text_secondary));
-                ui.add(egui::TextEdit::singleline(&mut state.rename_profile_input).desired_width(240.0));
-                if ui.button(RichText::new("✔ Save").color(theme.success).strong()).clicked() {
-                    let clean = state.rename_profile_input.trim().to_string();
-                    if !clean.is_empty() {
-                        profile.name = Some(clean.clone());
-                        let _ = ProfileParser::save_file(p_path, &profile);
-                        state.is_renaming = false;
-                        state.status_banner = Some((format!("Renamed profile to '{}'", clean), false));
-                    }
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                if state.is_renaming {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Rename:").color(theme.text_secondary));
+                        ui.add(egui::TextEdit::singleline(&mut state.rename_profile_input).desired_width(240.0));
+                        if ui.button(RichText::new("✔ Save").color(theme.success).strong()).clicked() {
+                            let clean = state.rename_profile_input.trim().to_string();
+                            if !clean.is_empty() {
+                                profile.name = Some(clean.clone());
+                                let _ = ProfileParser::save_file(p_path, &profile);
+                                state.is_renaming = false;
+                                state.status_banner = Some((format!("Renamed profile to '{}'", clean), false));
+                            }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            state.is_renaming = false;
+                        }
+                    });
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.heading(RichText::new(&prof_name).color(theme.text_primary).strong());
+                        if ui.button(RichText::new("✏ Rename").color(theme.text_secondary).small()).clicked() {
+                            state.is_renaming = true;
+                            state.rename_profile_input = prof_name.clone();
+                        }
+                    });
                 }
-                if ui.button("Cancel").clicked() {
-                    state.is_renaming = false;
-                }
-            } else {
-                ui.heading(RichText::new(&prof_name).color(theme.text_primary).strong());
-                if ui.button(RichText::new("✏ Rename").color(theme.text_secondary).small()).clicked() {
-                    state.is_renaming = true;
-                    state.rename_profile_input = prof_name.clone();
-                }
-            }
+            });
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if is_active {

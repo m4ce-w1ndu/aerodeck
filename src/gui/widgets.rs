@@ -64,6 +64,31 @@ pub fn ui_clickable_card<R>(
     (inner_resp.inner, click_resp)
 }
 
+/// Renders a clickable row card that expands to full available width (ideal for vertical lists)
+pub fn ui_clickable_row_card<R>(
+    ui: &mut Ui,
+    theme: &AeroTheme,
+    selected: bool,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> (R, Response) {
+    let (border, bg) = if selected {
+        (theme.accent, theme.bg_card_hover)
+    } else {
+        (theme.border_subtle, theme.bg_elevated)
+    };
+    let inner_resp = egui::Frame::none()
+        .fill(bg)
+        .stroke(Stroke::new(1.0_f32, border))
+        .rounding(6.0)
+        .inner_margin(Vec2::new(10.0, 6.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add_contents(ui)
+        });
+    let click_resp = ui.interact(inner_resp.response.rect, inner_resp.response.id, Sense::click());
+    (inner_resp.inner, click_resp)
+}
+
 /// Renders a pill-shaped status badge with high-contrast text (>4.5:1 WCAG AA)
 pub fn ui_status_badge(ui: &mut Ui, label: &str, active: bool, theme: &AeroTheme) {
     let (border, icon_color, text_color, icon) = if active {

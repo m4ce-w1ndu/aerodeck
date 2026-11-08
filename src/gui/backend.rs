@@ -274,6 +274,8 @@ async fn run_backend_loop(
     let shutdown = Arc::new(AtomicBool::new(false));
     DeviceEnumerator::start_hardware_listeners(&devices, event_tx.clone(), shutdown.clone());
 
+    let (sc_disconnect_tx, mut sc_disconnect_rx) = mpsc::channel::<()>(8);
+
     loop {
         tokio::select! {
             cmd = cmd_rx.recv() => {
@@ -306,6 +308,19 @@ async fn run_backend_loop(
                                 let _ = event_tx.send(GuiEvent::SimConnectStatus {
                                     connected: true,
                                     message: format!("Connected to MSFS SimConnect ({})", addr),
+                                });
+
+                                // Monitor SimConnect disconnects and Quit messages
+                                let mut sc_sub = sc.subscribe();
+                                let disc_tx = sc_disconnect_tx.clone();
+                                tokio::spawn(async move {
+                                    while let Ok(msg) = sc_sub.recv().await {
+                                        if matches!(msg, crate::simconnect::SimConnectMessage::Quit) {
+                                            let _ = disc_tx.send(()).await;
+                                            break;
+                                        }
+                                    }
+                                    let _ = disc_tx.send(()).await;
                                 });
 
                                 // Initialize WASM LVAR Bridge
@@ -893,22 +908,53 @@ async fn run_backend_loop(
                     None => break,
                 }
             }
+            _ = sc_disconnect_rx.recv() => {
+                if simconnect.is_some() {
+                    simconnect = None;
+                    bridge = None;
+                    executor = None;
+                    let _ = event_tx.send(GuiEvent::SimConnectStatus {
+                        connected: false,
+                        message: "SimConnect disconnected (Simulator stopped or session closed)".to_string(),
+                    });
+                    let _ = event_tx.send(GuiEvent::BridgeStatus {
+                        active: false,
+                        lvar_count: 0,
+                    });
+                    let _ = event_tx.send(GuiEvent::Log {
+                        timestamp: chrono_now(),
+                        level: "WARN".to_string(),
+                        text: "SimConnect disconnected from MSFS".to_string(),
+                    });
+                }
+            }
             _ = sleep(Duration::from_millis(500)) => {
                 tick_counter = tick_counter.wrapping_add(1);
 
                 // Unattended background auto-connect when FlightSimulator.exe is detected
                 if simconnect.is_none() && !user_disconnected && tick_counter.is_multiple_of(6) {
-                    let live_ports = crate::proton::ProtonConfigurator::discover_live_msfs_tcp_ports();
-                    if let Some(&port) = live_ports.first() {
-                        let addr = format!("127.0.0.1:{}", port);
-                        if let Ok(sc) = SimConnectClient::connect(&addr).await {
-                            let sc = Arc::new(sc);
-                            if sc.open("aerodeck-gui").await.is_ok() {
-                                simconnect = Some(sc.clone());
-                                let _ = event_tx.send(GuiEvent::SimConnectStatus {
-                                    connected: true,
-                                    message: format!("Auto-connected to MSFS SimConnect ({})", addr),
-                                });
+                    let port = crate::proton::ProtonConfigurator::resolve_best_simconnect_port(None, 45454);
+                    let addr = format!("127.0.0.1:{}", port);
+                    if let Ok(sc) = SimConnectClient::connect(&addr).await {
+                        let sc = Arc::new(sc);
+                        if sc.open("aerodeck-gui").await.is_ok() {
+                            let mut sc_sub = sc.subscribe();
+                            let disc_tx = sc_disconnect_tx.clone();
+                            tokio::spawn(async move {
+                                while let Ok(msg) = sc_sub.recv().await {
+                                    if matches!(msg, crate::simconnect::SimConnectMessage::Quit) {
+                                        let _ = disc_tx.send(()).await;
+                                        break;
+                                    }
+                                }
+                                let _ = disc_tx.send(()).await;
+                            });
+
+                            simconnect = Some(sc.clone());
+                            let _ = event_tx.send(GuiEvent::SimConnectStatus {
+                                connected: true,
+                                message: format!("Auto-connected to MSFS SimConnect ({})", addr),
+                            });
                                 let br = Arc::new(SpadLvarBridge::new(sc.clone()));
                                 if br.start().await.is_ok() {
                                     let _ = br.start_lvar_discovery().await;
@@ -930,7 +976,6 @@ async fn run_backend_loop(
                             }
                         }
                     }
-                }
 
                 // Periodic bridge check, live values, and aircraft name update
                 if let Some(ref br) = bridge {

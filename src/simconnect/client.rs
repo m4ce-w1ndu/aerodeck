@@ -160,6 +160,12 @@ impl SimConnectClient {
         let seq = self.next_seq();
         let mut builder = SendPacketBuilder::new(SimConnectSendId::Open, seq);
         builder.write_fixed_string(app_name, 256);
+        builder.write_u32(0); // dwReserved
+        builder.write_u32(0x4653_5800); // dwMagic: "FSX\0"
+        builder.write_u32(10); // dwApplicationVersionMajor
+        builder.write_u32(0); // dwApplicationVersionMinor
+        builder.write_u32(61259); // dwApplicationBuildMajor (SIMCONNECT_BUILD_SP2_XPACK)
+        builder.write_u32(0); // dwApplicationBuildMinor
         self.send_raw(&builder.build()).await
     }
 

@@ -4,7 +4,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::info;
 
 pub const MSFS_2020_STEAM_APP_ID: &str = "1250410";
 pub const MSFS_2024_STEAM_APP_ID: &str = "2537590";
@@ -284,12 +284,35 @@ impl ProtonConfigurator {
                     _ => continue,
                 };
                 let pid_path = entry.path();
-                let is_msfs = fs::read_to_string(pid_path.join("comm"))
-                    .map(|c| c.to_lowercase().contains("flightsimulator"))
-                    .unwrap_or(false)
-                    || fs::read_to_string(pid_path.join("cmdline"))
-                        .map(|c| c.to_lowercase().contains("flightsimulator.exe"))
-                        .unwrap_or(false);
+                let comm = fs::read_to_string(pid_path.join("comm"))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_lowercase();
+
+                // Explicitly reject known wrapper processes
+                if comm.starts_with("gamescope")
+                    || comm.starts_with("reaper")
+                    || comm.starts_with("srt-bwrap")
+                    || comm.starts_with("bwrap")
+                    || comm.starts_with("pv-adverb")
+                    || comm.starts_with("python")
+                    || comm.starts_with("steam")
+                    || comm.starts_with("bash")
+                    || comm.starts_with("sh")
+                {
+                    continue;
+                }
+
+                let cmdline = fs::read_to_string(pid_path.join("cmdline"))
+                    .unwrap_or_default()
+                    .to_lowercase();
+
+                let is_msfs = comm.contains("flightsimulator")
+                    || (cmdline.contains("flightsimulator.exe")
+                        && !cmdline.contains("gamescope")
+                        && !cmdline.contains("reaper")
+                        && !cmdline.contains("pv-adverb")
+                        && !cmdline.contains("bwrap"));
 
                 if is_msfs {
                     if let Ok(fds) = fs::read_dir(pid_path.join("fd")) {
@@ -520,48 +543,50 @@ impl ProtonConfigurator {
     ) -> u16 {
         let mut candidates = Vec::new();
 
-        // 1. Live MSFS TCP sockets from /proc
-        for port in Self::discover_live_msfs_tcp_ports() {
-            if !candidates.contains(&port) {
-                candidates.push(port);
-            }
+        // 1. Prioritize preferred_port (default 45454) if specified
+        if preferred_port > 0 && !candidates.contains(&preferred_port) {
+            candidates.push(preferred_port);
         }
 
         if let Some(roaming) = Self::find_msfs_roaming_path(custom_prefix.clone()) {
             let pfx = Self::resolve_pfx_root(&roaming).unwrap_or_else(|| roaming.clone());
 
-            // 2. Dynamic port from Wine registry
-            if let Some(reg_port) = Self::read_registry_dynamic_ipv4_port(&pfx) {
-                if !candidates.contains(&reg_port) {
-                    candidates.push(reg_port);
-                }
-            }
-
-            // 3. Static ports from SimConnect.xml
+            // 2. Static ports from SimConnect.xml
             for (_, xml_port) in Self::read_configured_ipv4_ports(&roaming) {
-                if !candidates.contains(&xml_port) {
+                if xml_port >= 1024 && !candidates.contains(&xml_port) {
                     candidates.push(xml_port);
                 }
             }
 
-            if !candidates.contains(&preferred_port) {
-                candidates.push(preferred_port);
-            }
-
-            // Probe TCP reachability on all candidates
-            for &port in &candidates {
-                let addr = SocketAddr::from(([127, 0, 0, 1], port));
-                if TcpStream::connect_timeout(&addr, Duration::from_millis(80)).is_ok() {
-                    return port;
+            // 3. Dynamic port from Wine registry
+            if let Some(reg_port) = Self::read_registry_dynamic_ipv4_port(&pfx) {
+                if reg_port >= 1024 && !candidates.contains(&reg_port) {
+                    candidates.push(reg_port);
                 }
             }
+        }
 
-            // 4. Fallback: If no TCP port is reachable, check if MSFS Named Pipe is active in Proton and spawn bridge!
+        // 4. Live MSFS TCP sockets discovered from /proc
+        for port in Self::discover_live_msfs_tcp_ports() {
+            if port >= 1024 && !candidates.contains(&port) {
+                candidates.push(port);
+            }
+        }
+
+        // Probe TCP reachability on all candidates
+        for &port in &candidates {
+            let addr = SocketAddr::from(([127, 0, 0, 1], port));
+            if TcpStream::connect_timeout(&addr, Duration::from_millis(80)).is_ok() {
+                return port;
+            }
+        }
+
+        // 5. Fallback: If no TCP port is reachable, check if MSFS Named Pipe is active in Proton and spawn bridge!
+        if let Some(roaming) = Self::find_msfs_roaming_path(custom_prefix) {
+            let pfx = Self::resolve_pfx_root(&roaming).unwrap_or_else(|| roaming.clone());
             if let Ok(true) = Self::probe_and_spawn_pipe_bridge(&pfx, &roaming, preferred_port) {
                 return preferred_port;
             }
-        } else {
-            warn!("Could not locate MSFS Roaming directory during port resolution");
         }
 
         preferred_port

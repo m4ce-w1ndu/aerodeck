@@ -318,7 +318,7 @@ impl SendPacketBuilder {
         let mut out = Vec::with_capacity(total_size as usize);
         out.write_u32::<LittleEndian>(total_size).unwrap();
         out.write_u32::<LittleEndian>(SIMCONNECT_PROTOCOL_VERSION).unwrap();
-        out.write_u32::<LittleEndian>(self.send_id_type as u32).unwrap();
+        out.write_u32::<LittleEndian>(0xF000_0000 | (self.send_id_type as u32)).unwrap();
         out.write_u32::<LittleEndian>(self.send_seq).unwrap();
         out.extend_from_slice(&self.body);
         out

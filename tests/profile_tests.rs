@@ -147,3 +147,74 @@ fn test_spad_v2_profile_and_token_generation() {
     }
 }
 
+#[test]
+fn test_multi_device_profile_merge_and_roundtrip() {
+    let joy_xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<Profile Version="2">
+  <Name>A320 Combined</Name>
+  <Devices>
+    <Device VendorID="0x4098" ProductID="0xBC27" Name="WINCTRL URSA MINOR 32 Joystick L" ID="JOY_4098_BC27">
+      <DevicePage ID="Default" IsDefaultPage="true" Name="Default">
+        <Events>
+          <Event BoundTo="BUTTON_3">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESS">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:AP_MASTER" Value="0" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+        </Events>
+      </DevicePage>
+    </Device>
+  </Devices>
+</Profile>"#;
+
+    let tca_xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<Profile Version="2">
+  <Name>TCA Quadrant Snippet</Name>
+  <Devices>
+    <Device VendorID="0x044F" ProductID="0x0407" Name="Thrustmaster TCA Q-Eng 1&amp;2" ID="TCA_044F_0407">
+      <DevicePage ID="Default" IsDefaultPage="true" Name="Default">
+        <Events>
+          <Event BoundTo="AXIS_X">
+            <EventDefinitions>
+              <EventDefinition Trigger="VALUE">
+                <EventActions>
+                  <EventActionCustomAxis Target="SIMCONNECT:THROTTLE1_AXIS_SET_EX1" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+        </Events>
+      </DevicePage>
+    </Device>
+  </Devices>
+</Profile>"#;
+
+    let mut base_prof = ProfileParser::parse_str(joy_xml).unwrap();
+    let tca_prof = ProfileParser::parse_str(tca_xml).unwrap();
+
+    // Merge TCA Quadrant into the same profile that already holds the Winwing Joystick
+    let summary = base_prof.merge_from_profile(&tca_prof, None, true);
+    assert_eq!(summary.total_devices_in_profile, 2);
+
+    // Both devices must exist and retain their respective actions
+    let joy_dev = base_prof
+        .find_device_for_connected(0x4098, 0xBC27, "JOY_4098_BC27")
+        .expect("Winwing Joystick must still exist in profile");
+    assert_eq!(joy_dev.mapped_input_count(), 1);
+
+    let tca_dev = base_prof
+        .find_device_for_connected(0x044F, 0x0407, "TCA_044F_0407")
+        .expect("Thrustmaster TCA Quadrant must exist in profile");
+    assert_eq!(tca_dev.mapped_input_count(), 1);
+
+    // Serialize and re-parse to verify full multi-device persistence
+    let serialized = ProfileParser::serialize_to_string(&base_prof).expect("Should serialize multi-device profile");
+    let reparsed = ProfileParser::parse_str(&serialized).expect("Should re-parse serialized multi-device profile");
+    assert_eq!(reparsed.devices.as_ref().unwrap().items.len(), 2);
+}
+
+

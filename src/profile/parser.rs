@@ -22,14 +22,45 @@ impl ProfileParser {
 
     pub fn parse_str(xml_str: &str) -> Result<SpadProfile> {
         // Parse with quick-xml serde deserializer
-        let profile: SpadProfile = quick_xml::de::from_str(xml_str)
+        let mut profile: SpadProfile = quick_xml::de::from_str(xml_str)
             .context("Failed to parse SPAD.neXt XML profile")?;
+        profile.consolidate_duplicate_devices();
         Ok(profile)
     }
 
     pub fn serialize_to_string(profile: &SpadProfile) -> Result<String> {
-        let serialized = quick_xml::se::to_string_with_root("Profile", profile)
+        let mut clean = profile.clone();
+        if let Some(ref mut devs) = clean.devices {
+            for dev in &mut devs.items {
+                for page in &mut dev.pages {
+                    if let Some(ref mut evs) = page.events {
+                        for ev in &mut evs.items {
+                            if let Some(ref mut defs) = ev.event_definitions {
+                                for def in &mut defs.items {
+                                    if let Some(ref mut acts) = def.actions {
+                                        acts.items.retain(|a| !matches!(a, super::schema::EventActionItem::Unknown));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let serialized = quick_xml::se::to_string_with_root("Profile", &clean)
             .context("Failed to serialize SPAD.neXt profile to XML")?;
         Ok(format!("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n{}", serialized))
+    }
+
+    pub fn save_file<P: AsRef<Path>>(path: P, profile: &SpadProfile) -> Result<()> {
+        let p = path.as_ref();
+        if let Some(parent) = p.parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = fs::create_dir_all(parent);
+            }
+        }
+        let xml = Self::serialize_to_string(profile)?;
+        fs::write(p, xml).with_context(|| format!("Failed to write profile file to {:?}", p))?;
+        Ok(())
     }
 }

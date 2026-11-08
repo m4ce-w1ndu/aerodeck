@@ -313,6 +313,11 @@ impl eframe::App for SpadLinxApp {
                         ui,
                         &mut self.mapping_state,
                         &mut self.profile,
+                        &mut self.profile_name,
+                        &mut self.profile_path_input,
+                        &self.aircraft_name,
+                        &self.discovered_aircrafts,
+                        &self.aircraft_assignments,
                         &self.cmd_tx,
                         &self.last_input,
                         &self.discovered_lvars,
@@ -422,7 +427,15 @@ fn render_top_bar(app: &mut SpadLinxApp, ui: &mut Ui) {
 
         if ui.button("Save").clicked() {
             let path = PathBuf::from(&app.profile_path_input);
-            let _ = app.cmd_tx.send(GuiCommand::SaveProfile(path));
+            if let Some(ref prof) = app.profile {
+                let _ = app.cmd_tx.send(GuiCommand::UpdateAndSaveProfile {
+                    profile: prof.clone(),
+                    path,
+                    bind_to_aircraft: None,
+                });
+            } else {
+                let _ = app.cmd_tx.send(GuiCommand::SaveProfile(path));
+            }
         }
 
         if ui

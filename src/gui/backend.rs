@@ -57,6 +57,14 @@ pub enum GuiEvent {
     Error(String),
 }
 
+#[derive(Debug, Clone)]
+pub struct TargetDeviceSpec {
+    pub vendor_id: u16,
+    pub product_id: u16,
+    pub device_id: String,
+    pub device_name: String,
+}
+
 #[derive(Debug)]
 pub enum GuiCommand {
     ConnectSimConnect { host: String, port: u16 },
@@ -77,6 +85,8 @@ pub enum GuiCommand {
         repo_id: String,
         activate_now: bool,
         bind_to_aircraft: Option<String>,
+        merge_into_active: bool,
+        target_device: Option<TargetDeviceSpec>,
     },
     ImportProfileFromUrl {
         url: String,
@@ -98,14 +108,28 @@ pub enum GuiCommand {
         account: SpadAccountConfig,
         activate_now: bool,
         bind_to_aircraft: Option<String>,
+        merge_into_active: bool,
+        target_device: Option<TargetDeviceSpec>,
     },
     ImportWindowsSpadProfile {
         source_path: PathBuf,
         activate_now: bool,
         bind_to_aircraft: Option<String>,
+        merge_into_active: bool,
+        target_device: Option<TargetDeviceSpec>,
     },
     ImportAllWindowsSpadProfiles {
         custom_dir: Option<String>,
+    },
+    MergeProfileFromFile {
+        source_path: PathBuf,
+        target_device: Option<TargetDeviceSpec>,
+        bind_to_aircraft: Option<String>,
+    },
+    UpdateAndSaveProfile {
+        profile: SpadProfile,
+        path: PathBuf,
+        bind_to_aircraft: Option<String>,
     },
     SimulateInput { device: String, bound_to: String, action: String },
     LoadProfile(PathBuf),
@@ -488,54 +512,41 @@ async fn run_backend_loop(
                             &event_tx,
                         ).await;
                     }
-                    Some(GuiCommand::InstallRepositoryProfile { repo_id, activate_now, bind_to_aircraft }) => {
+                    Some(GuiCommand::InstallRepositoryProfile {
+                        repo_id,
+                        activate_now,
+                        bind_to_aircraft,
+                        merge_into_active,
+                        target_device,
+                    }) => {
                         let catalog = ProfileRepository::builtin_catalog();
                         if let Some(entry) = catalog.iter().find(|e| e.id == repo_id) {
                             match ProfileRepository::install_repository_profile(entry) {
                                 Ok(path) => {
-                                    let rel_path = path
-                                        .file_name()
-                                        .map(|f| format!("profiles/{}", f.to_string_lossy()))
-                                        .unwrap_or_else(|| path.to_string_lossy().to_string());
-                                    if let Ok(prof) = ProfileParser::parse_file(&path) {
-                                        let prof_name = prof.name.clone().unwrap_or_else(|| entry.name.clone());
-                                        assignments.import_from_xml_profiles();
-                                        if let Some(ref ac_title) = bind_to_aircraft {
-                                            let _ = assignments.assign_aircraft(ac_title, &rel_path);
-                                        }
-                                        let _ = event_tx.send(GuiEvent::RepositoryProfileInstalled {
-                                            id: repo_id.clone(),
-                                            name: prof_name.clone(),
-                                            path: rel_path.clone(),
-                                        });
-                                        let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
-                                            aircrafts: discovered_aircrafts.clone(),
-                                            assignments: assignments.clone(),
-                                        });
-                                        let _ = event_tx.send(GuiEvent::Log {
-                                            timestamp: chrono_now(),
-                                            level: "INFO".to_string(),
-                                            text: format!("Installed repository profile '{}' to {}", prof_name, rel_path),
-                                        });
-                                        if activate_now {
-                                            current_profile_path = Some(rel_path.clone());
-                                            active_profile = Some(Arc::new(Mutex::new(prof.clone())));
-                                            if let (Some(ref sc), Some(ref br)) = (&simconnect, &bridge) {
-                                                executor = Some(Arc::new(ProfileExecutor::new(
-                                                    prof,
-                                                    sc.clone(),
-                                                    br.clone(),
-                                                )));
-                                            }
-                                            let _ = event_tx.send(GuiEvent::ProfileLoaded {
-                                                name: prof_name,
-                                                path: rel_path,
-                                            });
-                                        }
-                                    }
+                                    apply_imported_or_merged_profile(
+                                        &path,
+                                        &entry.name,
+                                        Some(repo_id),
+                                        activate_now,
+                                        bind_to_aircraft,
+                                        merge_into_active,
+                                        target_device,
+                                        &discovered_aircrafts,
+                                        &mut assignments,
+                                        &mut active_profile,
+                                        &mut current_profile_path,
+                                        &mut executor,
+                                        &simconnect,
+                                        &bridge,
+                                        &event_tx,
+                                    )
+                                    .await;
                                 }
                                 Err(e) => {
-                                    let _ = event_tx.send(GuiEvent::Error(format!("Failed to install profile '{}': {}", repo_id, e)));
+                                    let _ = event_tx.send(GuiEvent::Error(format!(
+                                        "Failed to install profile '{}': {}",
+                                        repo_id, e
+                                    )));
                                 }
                             }
                         }
@@ -543,38 +554,24 @@ async fn run_backend_loop(
                     Some(GuiCommand::ImportProfileFromUrl { url, save_name, activate_now }) => {
                         match ProfileRepository::download_profile_from_url(&url, &save_name) {
                             Ok(path) => {
-                                let rel_path = path
-                                    .file_name()
-                                    .map(|f| format!("profiles/{}", f.to_string_lossy()))
-                                    .unwrap_or_else(|| path.to_string_lossy().to_string());
-                                if let Ok(prof) = ProfileParser::parse_file(&path) {
-                                    let prof_name = prof.name.clone().unwrap_or_else(|| save_name.clone());
-                                    assignments.import_from_xml_profiles();
-                                    let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
-                                        aircrafts: discovered_aircrafts.clone(),
-                                        assignments: assignments.clone(),
-                                    });
-                                    let _ = event_tx.send(GuiEvent::Log {
-                                        timestamp: chrono_now(),
-                                        level: "INFO".to_string(),
-                                        text: format!("Downloaded profile '{}' from {} -> {}", prof_name, url, rel_path),
-                                    });
-                                    if activate_now {
-                                        current_profile_path = Some(rel_path.clone());
-                                        active_profile = Some(Arc::new(Mutex::new(prof.clone())));
-                                        if let (Some(ref sc), Some(ref br)) = (&simconnect, &bridge) {
-                                            executor = Some(Arc::new(ProfileExecutor::new(
-                                                prof,
-                                                sc.clone(),
-                                                br.clone(),
-                                            )));
-                                        }
-                                        let _ = event_tx.send(GuiEvent::ProfileLoaded {
-                                            name: prof_name,
-                                            path: rel_path,
-                                        });
-                                    }
-                                }
+                                apply_imported_or_merged_profile(
+                                    &path,
+                                    &save_name,
+                                    None,
+                                    activate_now,
+                                    None,
+                                    false,
+                                    None,
+                                    &discovered_aircrafts,
+                                    &mut assignments,
+                                    &mut active_profile,
+                                    &mut current_profile_path,
+                                    &mut executor,
+                                    &simconnect,
+                                    &bridge,
+                                    &event_tx,
+                                )
+                                .await;
                             }
                             Err(e) => {
                                 let _ = event_tx.send(GuiEvent::Error(format!("URL download failed: {}", e)));
@@ -637,6 +634,8 @@ async fn run_backend_loop(
                         account,
                         activate_now,
                         bind_to_aircraft,
+                        merge_into_active,
+                        target_device,
                     }) => {
                         match ProfileRepository::download_online_spad_snippet(
                             snippet_id,
@@ -644,51 +643,24 @@ async fn run_backend_loop(
                             &account,
                         ) {
                             Ok(path) => {
-                                let rel_path = path
-                                    .file_name()
-                                    .map(|f| format!("profiles/{}", f.to_string_lossy()))
-                                    .unwrap_or_else(|| path.to_string_lossy().to_string());
-                                if let Some(ref ac_title) = bind_to_aircraft {
-                                    let _ = assignments.assign_aircraft(ac_title, &rel_path);
-                                }
-                                assignments.import_from_xml_profiles();
-                                let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
-                                    aircrafts: discovered_aircrafts.clone(),
-                                    assignments: assignments.clone(),
-                                });
-                                let _ = event_tx.send(GuiEvent::Log {
-                                    timestamp: chrono_now(),
-                                    level: "INFO".to_string(),
-                                    text: format!(
-                                        "Downloaded SPAD.neXt Online Profile #{} '{}' -> {}",
-                                        snippet_id, profile_name, rel_path
-                                    ),
-                                });
-                                if activate_now {
-                                    if let Ok(mut prof) = ProfileParser::parse_file(&path) {
-                                        if prof.name.is_none() {
-                                            prof.name = Some(profile_name.clone());
-                                        }
-                                        let prof_name = prof
-                                            .name
-                                            .clone()
-                                            .unwrap_or_else(|| profile_name.clone());
-                                        current_profile_path = Some(rel_path.clone());
-                                        active_profile = Some(Arc::new(Mutex::new(prof.clone())));
-                                        if let (Some(ref sc), Some(ref br)) = (&simconnect, &bridge)
-                                        {
-                                            executor = Some(Arc::new(ProfileExecutor::new(
-                                                prof,
-                                                sc.clone(),
-                                                br.clone(),
-                                            )));
-                                        }
-                                        let _ = event_tx.send(GuiEvent::ProfileLoaded {
-                                            name: prof_name,
-                                            path: rel_path,
-                                        });
-                                    }
-                                }
+                                apply_imported_or_merged_profile(
+                                    &path,
+                                    &profile_name,
+                                    None,
+                                    activate_now,
+                                    bind_to_aircraft,
+                                    merge_into_active,
+                                    target_device,
+                                    &discovered_aircrafts,
+                                    &mut assignments,
+                                    &mut active_profile,
+                                    &mut current_profile_path,
+                                    &mut executor,
+                                    &simconnect,
+                                    &bridge,
+                                    &event_tx,
+                                )
+                                .await;
                             }
                             Err(e) => {
                                 let _ = event_tx.send(GuiEvent::Error(format!(
@@ -702,44 +674,35 @@ async fn run_backend_loop(
                         source_path,
                         activate_now,
                         bind_to_aircraft,
+                        merge_into_active,
+                        target_device,
                     }) => {
                         match ProfileRepository::import_windows_spad_profile(&source_path) {
                             Ok(path) => {
-                                let rel_path = path
-                                    .file_name()
-                                    .map(|f| format!("profiles/{}", f.to_string_lossy()))
-                                    .unwrap_or_else(|| path.to_string_lossy().to_string());
-                                if let Some(ref ac_title) = bind_to_aircraft {
-                                    let _ = assignments.assign_aircraft(ac_title, &rel_path);
-                                }
+                                let fallback_name = path
+                                    .file_stem()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| "Imported Profile".to_string());
                                 let win_profiles = ProfileRepository::discover_windows_spad_profiles(None);
                                 let _ = event_tx.send(GuiEvent::WindowsSpadProfilesUpdated(win_profiles));
-                                let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
-                                    aircrafts: discovered_aircrafts.clone(),
-                                    assignments: assignments.clone(),
-                                });
-                                if activate_now {
-                                    if let Ok(prof) = ProfileParser::parse_file(&path) {
-                                        let prof_name = prof
-                                            .name
-                                            .clone()
-                                            .unwrap_or_else(|| rel_path.clone());
-                                        current_profile_path = Some(rel_path.clone());
-                                        active_profile = Some(Arc::new(Mutex::new(prof.clone())));
-                                        if let (Some(ref sc), Some(ref br)) = (&simconnect, &bridge)
-                                        {
-                                            executor = Some(Arc::new(ProfileExecutor::new(
-                                                prof,
-                                                sc.clone(),
-                                                br.clone(),
-                                            )));
-                                        }
-                                        let _ = event_tx.send(GuiEvent::ProfileLoaded {
-                                            name: prof_name,
-                                            path: rel_path,
-                                        });
-                                    }
-                                }
+                                apply_imported_or_merged_profile(
+                                    &path,
+                                    &fallback_name,
+                                    None,
+                                    activate_now,
+                                    bind_to_aircraft,
+                                    merge_into_active,
+                                    target_device,
+                                    &discovered_aircrafts,
+                                    &mut assignments,
+                                    &mut active_profile,
+                                    &mut current_profile_path,
+                                    &mut executor,
+                                    &simconnect,
+                                    &bridge,
+                                    &event_tx,
+                                )
+                                .await;
                             }
                             Err(e) => {
                                 let _ = event_tx.send(GuiEvent::Error(format!(
@@ -765,6 +728,75 @@ async fn run_backend_loop(
                             level: "INFO".to_string(),
                             text: format!("Imported {} Windows SPAD.neXt profiles into ./profiles/", count),
                         });
+                    }
+                    Some(GuiCommand::MergeProfileFromFile {
+                        source_path,
+                        target_device,
+                        bind_to_aircraft,
+                    }) => {
+                        let fallback_name = source_path
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "Merged Profile".to_string());
+                        apply_imported_or_merged_profile(
+                            &source_path,
+                            &fallback_name,
+                            None,
+                            true,
+                            bind_to_aircraft,
+                            true,
+                            target_device,
+                            &discovered_aircrafts,
+                            &mut assignments,
+                            &mut active_profile,
+                            &mut current_profile_path,
+                            &mut executor,
+                            &simconnect,
+                            &bridge,
+                            &event_tx,
+                        )
+                        .await;
+                    }
+                    Some(GuiCommand::UpdateAndSaveProfile {
+                        profile,
+                        path,
+                        bind_to_aircraft,
+                    }) => {
+                        let path_str = path.to_string_lossy().to_string();
+                        let prof_name = profile
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| path_str.clone());
+                        if let Err(e) = ProfileParser::save_file(&path, &profile) {
+                            let _ = event_tx.send(GuiEvent::Error(format!(
+                                "Failed to save profile to {}: {}",
+                                path_str, e
+                            )));
+                        } else {
+                            current_profile_path = Some(path_str.clone());
+                            active_profile = Some(Arc::new(Mutex::new(profile.clone())));
+                            if let (Some(ref sc), Some(ref br)) = (&simconnect, &bridge) {
+                                executor = Some(Arc::new(ProfileExecutor::new(
+                                    profile,
+                                    sc.clone(),
+                                    br.clone(),
+                                )));
+                            }
+                            if let Some(ref ac_title) = bind_to_aircraft {
+                                let _ = assignments.assign_aircraft(ac_title, &path_str);
+                                let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
+                                    aircrafts: discovered_aircrafts.clone(),
+                                    assignments: assignments.clone(),
+                                });
+                            }
+                            let _ = event_tx.send(GuiEvent::ProfileSaved {
+                                path: path_str.clone(),
+                            });
+                            let _ = event_tx.send(GuiEvent::ProfileLoaded {
+                                name: prof_name,
+                                path: path_str,
+                            });
+                        }
                     }
                     Some(GuiCommand::SimulateInput { device, bound_to, action }) => {
                         let _ = event_tx.send(GuiEvent::InputTriggered {
@@ -818,20 +850,14 @@ async fn run_backend_loop(
                     Some(GuiCommand::SaveProfile(path)) => {
                         if let Some(ref prof) = active_profile {
                             let prof_guard = prof.lock().await;
-                            match quick_xml::se::to_string_with_root("Profile", &*prof_guard) {
-                                Ok(xml) => {
-                                    let full_xml = format!(r#"<?xml version="1.0" encoding="utf-8"?>
-{}"#, xml);
-                                    if let Err(e) = std::fs::write(&path, full_xml) {
-                                        let _ = event_tx.send(GuiEvent::Error(format!("Failed to save profile: {}", e)));
-                                    } else {
-                                        let _ = event_tx.send(GuiEvent::ProfileSaved {
-                                            path: path.to_string_lossy().to_string(),
-                                        });
-                                    }
+                            match ProfileParser::save_file(&path, &*prof_guard) {
+                                Ok(()) => {
+                                    let _ = event_tx.send(GuiEvent::ProfileSaved {
+                                        path: path.to_string_lossy().to_string(),
+                                    });
                                 }
                                 Err(e) => {
-                                    let _ = event_tx.send(GuiEvent::Error(format!("Failed to serialize profile: {}", e)));
+                                    let _ = event_tx.send(GuiEvent::Error(format!("Failed to save profile: {}", e)));
                                 }
                             }
                         }
@@ -970,6 +996,206 @@ async fn handle_aircraft_change(
                 });
             }
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_imported_or_merged_profile(
+    downloaded_path: &std::path::Path,
+    fallback_name: &str,
+    repo_id: Option<String>,
+    activate_now: bool,
+    bind_to_aircraft: Option<String>,
+    merge_into_active: bool,
+    target_device: Option<TargetDeviceSpec>,
+    discovered_aircrafts: &[DiscoveredAircraft],
+    assignments: &mut AircraftAssignmentManager,
+    active_profile: &mut Option<Arc<Mutex<SpadProfile>>>,
+    current_profile_path: &mut Option<String>,
+    executor: &mut Option<Arc<ProfileExecutor>>,
+    simconnect: &Option<Arc<SimConnectClient>>,
+    bridge: &Option<Arc<SpadLvarBridge>>,
+    event_tx: &mpsc::UnboundedSender<GuiEvent>,
+) {
+    let rel_path = downloaded_path
+        .file_name()
+        .map(|f| format!("profiles/{}", f.to_string_lossy()))
+        .unwrap_or_else(|| downloaded_path.to_string_lossy().to_string());
+
+    let mut incoming_prof = match ProfileParser::parse_file(downloaded_path) {
+        Ok(mut p) => {
+            if p.name.is_none() {
+                p.name = Some(fallback_name.to_string());
+            }
+            p
+        }
+        Err(e) => {
+            let _ = event_tx.send(GuiEvent::Error(format!(
+                "Failed to parse profile {:?}: {}",
+                downloaded_path, e
+            )));
+            return;
+        }
+    };
+
+    let target_tuple = target_device
+        .as_ref()
+        .map(|td| (td.vendor_id, td.product_id, td.device_id.as_str(), td.device_name.as_str()));
+
+    // Check if we should merge into an existing profile:
+    // 1. User explicitly asked to merge into the active profile (`merge_into_active == true`), OR
+    // 2. User is binding to an aircraft that ALREADY has a non-stock bound profile on disk
+    let existing_aircraft_profile_path = bind_to_aircraft
+        .as_deref()
+        .and_then(|ac| assignments.assignments.get(ac).cloned())
+        .filter(|p| {
+            std::path::Path::new(p).exists()
+                && *p != rel_path
+                && !p.ends_with("cessna_ga_winwing_tca.xml")
+                && !p.ends_with("airbus_a320_winwing_tca.xml")
+                && !p.ends_with("boeing_airliner_winwing_tca.xml")
+                && !p.ends_with("saitek_pro_flight_complete.xml")
+        });
+
+    let should_merge_into_existing = merge_into_active || existing_aircraft_profile_path.is_some();
+
+    let (final_prof, final_path_str) = if should_merge_into_existing {
+        // Resolve the base profile we are merging into
+        let (mut base_prof, dest_path) = if let Some(ref ac_prof_path) = existing_aircraft_profile_path {
+            if let Ok(p) = ProfileParser::parse_file(ac_prof_path) {
+                (p, ac_prof_path.clone())
+            } else {
+                (incoming_prof.clone(), rel_path.clone())
+            }
+        } else if let Some(ref act_arc) = active_profile {
+            let guard = act_arc.lock().await;
+            let p_path = current_profile_path
+                .clone()
+                .unwrap_or_else(|| rel_path.clone());
+            // If current profile is a stock read-only template and we are binding to an aircraft, save as a dedicated aircraft profile
+            let dest = if let Some(ref ac) = bind_to_aircraft {
+                if p_path.ends_with("cessna_ga_winwing_tca.xml")
+                    || p_path.ends_with("airbus_a320_winwing_tca.xml")
+                    || p_path.ends_with("boeing_airliner_winwing_tca.xml")
+                    || p_path.ends_with("saitek_pro_flight_complete.xml")
+                    || p_path == "default_c172.xml"
+                {
+                    let slug: String = ac
+                        .chars()
+                        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                        .collect();
+                    format!("profiles/aircraft_{}.xml", slug.trim_matches('_'))
+                } else {
+                    p_path
+                }
+            } else {
+                p_path
+            };
+            (guard.clone(), dest)
+        } else {
+            (incoming_prof.clone(), rel_path.clone())
+        };
+
+        if let Some(ref ac) = bind_to_aircraft {
+            if base_prof
+                .name
+                .as_deref()
+                .map(|n| n.contains("Default") || n.contains("Stock"))
+                .unwrap_or(true)
+            {
+                base_prof.name = Some(format!("{} Multi-Device Profile", ac));
+            }
+        }
+
+        let summary = base_prof.merge_from_profile(&incoming_prof, target_tuple, true);
+        let _ = ProfileParser::save_file(&dest_path, &base_prof);
+
+        let _ = event_tx.send(GuiEvent::Log {
+            timestamp: chrono_now(),
+            level: "INFO".to_string(),
+            text: format!(
+                "[MULTI-DEVICE MERGE] Merged {} ({} input events) into profile '{}' ({}) — profile now holds {} device(s).",
+                summary.merged_device_names.join(", "),
+                summary.total_events_merged,
+                base_prof.name.as_deref().unwrap_or(&dest_path),
+                dest_path,
+                summary.total_devices_in_profile
+            ),
+        });
+
+        (base_prof, dest_path)
+    } else {
+        // Standalone import, but if a target_device was explicitly selected, ensure its VID:PID is bound in the profile
+        if target_tuple.is_some() {
+            let orig = incoming_prof.clone();
+            let summary = incoming_prof.merge_from_profile(&orig, target_tuple, true);
+            let _ = ProfileParser::save_file(downloaded_path, &incoming_prof);
+            let _ = event_tx.send(GuiEvent::Log {
+                timestamp: chrono_now(),
+                level: "INFO".to_string(),
+                text: format!(
+                    "Imported profile '{}' bound to device {} ({})",
+                    fallback_name,
+                    summary.merged_device_names.join(", "),
+                    rel_path
+                ),
+            });
+        } else {
+            let _ = event_tx.send(GuiEvent::Log {
+                timestamp: chrono_now(),
+                level: "INFO".to_string(),
+                text: format!("Imported profile '{}' -> {}", fallback_name, rel_path),
+            });
+        }
+        (incoming_prof, rel_path)
+    };
+
+    let final_prof_name = final_prof
+        .name
+        .clone()
+        .unwrap_or_else(|| fallback_name.to_string());
+
+    if let Some(id) = repo_id {
+        let _ = event_tx.send(GuiEvent::RepositoryProfileInstalled {
+            id,
+            name: final_prof_name.clone(),
+            path: final_path_str.clone(),
+        });
+    }
+
+    if let Some(ref ac_title) = bind_to_aircraft {
+        let _ = assignments.assign_aircraft(ac_title, &final_path_str);
+        let _ = event_tx.send(GuiEvent::Log {
+            timestamp: chrono_now(),
+            level: "INFO".to_string(),
+            text: format!(
+                "Bound aircraft '{}' -> multi-device profile '{}' ({})",
+                ac_title, final_prof_name, final_path_str
+            ),
+        });
+    } else {
+        assignments.import_from_xml_profiles();
+    }
+
+    let _ = event_tx.send(GuiEvent::AircraftCatalogUpdated {
+        aircrafts: discovered_aircrafts.to_vec(),
+        assignments: assignments.clone(),
+    });
+
+    if activate_now || merge_into_active {
+        *current_profile_path = Some(final_path_str.clone());
+        *active_profile = Some(Arc::new(Mutex::new(final_prof.clone())));
+        if let (Some(ref sc), Some(ref br)) = (simconnect, bridge) {
+            *executor = Some(Arc::new(ProfileExecutor::new(
+                final_prof,
+                sc.clone(),
+                br.clone(),
+            )));
+        }
+        let _ = event_tx.send(GuiEvent::ProfileLoaded {
+            name: final_prof_name,
+            path: final_path_str,
+        });
     }
 }
 

@@ -2,7 +2,7 @@ use eframe::egui::{self, Color32, RichText, ScrollArea, Ui};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
-use crate::gui::backend::GuiCommand;
+use crate::gui::backend::{GuiCommand, TargetDeviceSpec};
 use crate::hardware::enumerator::ConnectedDevice;
 use crate::profile::{
     AircraftAssignmentManager, DiscoveredAircraft, OnlineSpadProfileEntry, ProfileRepository,
@@ -32,6 +32,9 @@ pub struct AircraftProfilesViewState {
 
     // Right pane source tab
     pub active_repo_tab: RepositorySourceTab,
+
+    // Target connected device for importing/merging (None = Auto-Match all devices by VID:PID)
+    pub target_device_selection: Option<usize>,
 
     // SPAD.neXt Account & Automatic X-Token config
     pub spad_account: SpadAccountConfig,
@@ -72,6 +75,7 @@ impl Default for AircraftProfilesViewState {
             selected_aircraft_title: None,
             selected_profile_to_bind: "profiles/Fenix A320.xml".to_string(),
             active_repo_tab: RepositorySourceTab::OnlineSpadRepository,
+            target_device_selection: None,
             spad_account,
             show_account_editor: false,
             is_fetching_online: true,
@@ -740,15 +744,78 @@ fn render_right_profile_repository(
                             .add_filter("SPAD.neXt Profile", &["xml", "spadprofile"])
                             .pick_file()
                         {
+                            let target_dev = resolve_target_device(state, devices);
                             let _ = cmd_tx.send(GuiCommand::ImportWindowsSpadProfile {
                                 source_path: file,
                                 activate_now: true,
                                 bind_to_aircraft: state.selected_aircraft_title.clone(),
+                                merge_into_active: true,
+                                target_device: target_dev,
                             });
                         }
                     }
                 });
             });
+
+            ui.add_space(4.0);
+
+            // Target Connected Device Selector (for binding/merging imported snippets to a specific controller)
+            egui::Frame::default()
+                .fill(Color32::from_rgb(25, 32, 46))
+                .inner_margin(6.0)
+                .rounding(4.0)
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new("🎮 Target Controller for Import / Merge:")
+                                .color(Color32::from_rgb(120, 210, 255))
+                                .strong(),
+                        );
+
+                        let selected_dev_label = match state.target_device_selection {
+                            Some(idx) if idx < devices.len() => {
+                                let d = &devices[idx];
+                                format!(
+                                    "🎮 {} (0x{:04X}:0x{:04X})",
+                                    d.name, d.vendor_id, d.product_id
+                                )
+                            }
+                            _ => "🔄 Auto-Match All Devices by VID:PID (Multi-Device)".to_string(),
+                        };
+
+                        egui::ComboBox::from_id_salt("repo_target_device_selector")
+                            .width(340.0)
+                            .selected_text(selected_dev_label)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut state.target_device_selection,
+                                    None,
+                                    "🔄 Auto-Match All Devices by VID:PID (Multi-Device)",
+                                );
+                                for (idx, dev) in devices.iter().enumerate() {
+                                    ui.selectable_value(
+                                        &mut state.target_device_selection,
+                                        Some(idx),
+                                        format!(
+                                            "🎮 {} (0x{:04X}:0x{:04X}) [{}]",
+                                            dev.name,
+                                            dev.vendor_id,
+                                            dev.product_id,
+                                            dev.category.badge()
+                                        ),
+                                    );
+                                }
+                            });
+
+                        ui.label(
+                            RichText::new(
+                                "✔ Merging keeps all other controllers' mappings in your aircraft profile!",
+                            )
+                            .small()
+                            .color(Color32::from_rgb(130, 230, 160)),
+                        );
+                    });
+                });
 
             ui.separator();
 
@@ -884,11 +951,15 @@ fn render_online_spad_tab(
         })
         .collect();
 
+    let total_matching = filtered.len();
+    let display_entries: Vec<OnlineSpadProfileEntry> =
+        filtered.into_iter().take(150).cloned().collect();
+
     ui.label(
         RichText::new(format!(
             "Showing {} of {} matching online profiles from update.spadnext.net (sorted by popularity):",
-            filtered.len().min(150),
-            filtered.len()
+            display_entries.len(),
+            total_matching
         ))
         .small()
         .color(Color32::GRAY),
@@ -899,7 +970,7 @@ fn render_online_spad_tab(
         .id_salt("online_spad_catalog_scroll")
         .max_height(ui.available_height() - 10.0)
         .show(ui, |ui| {
-            for entry in filtered.into_iter().take(150) {
+            for entry in &display_entries {
                 egui::Frame::default()
                     .fill(Color32::from_rgb(28, 33, 44))
                     .inner_margin(8.0)
@@ -999,11 +1070,23 @@ fn render_online_spad_tab(
 
                         ui.add_space(4.0);
                         ui.horizontal_wrapped(|ui| {
+                            let target_dev = resolve_target_device(state, devices);
+                            let dev_suffix = target_dev
+                                .as_ref()
+                                .map(|d| format!(" -> '{}'", d.device_name))
+                                .unwrap_or_default();
+
                             if ui
                                 .button(
-                                    RichText::new("📥 Download & Activate Now")
-                                        .color(Color32::from_rgb(0, 255, 140))
-                                        .strong(),
+                                    RichText::new(format!(
+                                        "➕ Merge Device into Active Profile{}",
+                                        dev_suffix
+                                    ))
+                                    .color(Color32::from_rgb(0, 255, 140))
+                                    .strong(),
+                                )
+                                .on_hover_text(
+                                    "Merges this snippet's device mappings into your currently loaded multi-device profile while keeping all other controllers' mappings intact",
                                 )
                                 .clicked()
                             {
@@ -1013,11 +1096,13 @@ fn render_online_spad_tab(
                                     account: state.spad_account.clone(),
                                     activate_now: true,
                                     bind_to_aircraft: None,
+                                    merge_into_active: true,
+                                    target_device: target_dev.clone(),
                                 });
                                 state.status_banner = Some((
                                     format!(
-                                        "Downloading SPAD.neXt Profile #{} '{}'...",
-                                        entry.snippet_id, entry.name
+                                        "Merging SPAD.neXt Profile #{} '{}' into active profile ({})...",
+                                        entry.snippet_id, entry.name, active_profile_path
                                     ),
                                     false,
                                 ));
@@ -1027,10 +1112,14 @@ fn render_online_spad_tab(
                                 if ui
                                     .button(
                                         RichText::new(format!(
-                                            "🔗 Download & Bind to '{}'",
-                                            sel_ac
+                                            "🔗 Import & Merge into '{}' Profile{}",
+                                            sel_ac, dev_suffix
                                         ))
-                                        .color(Color32::from_rgb(100, 220, 255)),
+                                        .color(Color32::from_rgb(100, 220, 255))
+                                        .strong(),
+                                    )
+                                    .on_hover_text(
+                                        "Imports this device profile into the selected aircraft's multi-device profile (keeping any other devices already configured for this aircraft)",
                                     )
                                     .clicked()
                                 {
@@ -1040,10 +1129,12 @@ fn render_online_spad_tab(
                                         account: state.spad_account.clone(),
                                         activate_now: true,
                                         bind_to_aircraft: Some(sel_ac.clone()),
+                                        merge_into_active: true,
+                                        target_device: target_dev.clone(),
                                     });
                                     state.status_banner = Some((
                                         format!(
-                                            "Downloading '{}' and binding to '{}'...",
+                                            "Downloading '{}' & merging into '{}' multi-device profile...",
                                             entry.name, sel_ac
                                         ),
                                         false,
@@ -1051,7 +1142,30 @@ fn render_online_spad_tab(
                                 }
                             }
 
-                            let _ = active_profile_path;
+                            if ui
+                                .button(
+                                    RichText::new("📄 Load as Separate Profile")
+                                        .color(Color32::LIGHT_GRAY),
+                                )
+                                .clicked()
+                            {
+                                let _ = cmd_tx.send(GuiCommand::DownloadOnlineSpadSnippet {
+                                    snippet_id: entry.snippet_id,
+                                    profile_name: entry.name.clone(),
+                                    account: state.spad_account.clone(),
+                                    activate_now: true,
+                                    bind_to_aircraft: None,
+                                    merge_into_active: false,
+                                    target_device: target_dev,
+                                });
+                                state.status_banner = Some((
+                                    format!(
+                                        "Downloaded & loaded '{}' as standalone profile",
+                                        entry.name
+                                    ),
+                                    false,
+                                ));
+                            }
                         });
                     });
                 ui.add_space(6.0);
@@ -1102,7 +1216,7 @@ fn render_windows_spad_tab(
     ui.add_space(4.0);
     ui.label(
         RichText::new(
-            "These are your personal SPAD.neXt profiles discovered from your Windows backup/installation. They are automatically imported into ./profiles/ so you can activate or bind them to any aircraft in 1 click!",
+            "These are your personal SPAD.neXt profiles discovered from your Windows backup/installation. You can activate them directly as multi-device profiles, merge their device mappings into your current profile, or bind them to any aircraft!",
         )
         .small()
         .color(Color32::GRAY),
@@ -1209,9 +1323,10 @@ fn render_windows_spad_tab(
 
                         ui.add_space(4.0);
                         ui.horizontal_wrapped(|ui| {
+                            let target_dev = resolve_target_device(state, devices);
                             if ui
                                 .button(
-                                    RichText::new("⚡ Import & Activate Now")
+                                    RichText::new("⚡ Load Multi-Device Profile")
                                         .color(Color32::from_rgb(0, 255, 140))
                                         .strong(),
                                 )
@@ -1221,9 +1336,37 @@ fn render_windows_spad_tab(
                                     source_path: wp.source_path.clone(),
                                     activate_now: true,
                                     bind_to_aircraft: None,
+                                    merge_into_active: false,
+                                    target_device: target_dev.clone(),
                                 });
                                 state.status_banner = Some((
                                     format!("Activated Windows SPAD profile '{}'", wp.name),
+                                    false,
+                                ));
+                            }
+
+                            if ui
+                                .button(
+                                    RichText::new("➕ Merge Devices into Active Profile")
+                                        .color(Color32::from_rgb(255, 210, 90)),
+                                )
+                                .on_hover_text(
+                                    "Merges the controller mappings from this Windows profile into your currently loaded profile without losing other devices",
+                                )
+                                .clicked()
+                            {
+                                let _ = cmd_tx.send(GuiCommand::ImportWindowsSpadProfile {
+                                    source_path: wp.source_path.clone(),
+                                    activate_now: true,
+                                    bind_to_aircraft: None,
+                                    merge_into_active: true,
+                                    target_device: target_dev.clone(),
+                                });
+                                state.status_banner = Some((
+                                    format!(
+                                        "Merged devices from '{}' into '{}'",
+                                        wp.name, active_profile_path
+                                    ),
                                     false,
                                 ));
                             }
@@ -1235,7 +1378,8 @@ fn render_windows_spad_tab(
                                             "🔗 Import & Bind to '{}'",
                                             sel_ac
                                         ))
-                                        .color(Color32::from_rgb(100, 220, 255)),
+                                        .color(Color32::from_rgb(100, 220, 255))
+                                        .strong(),
                                     )
                                     .clicked()
                                 {
@@ -1243,6 +1387,8 @@ fn render_windows_spad_tab(
                                         source_path: wp.source_path.clone(),
                                         activate_now: true,
                                         bind_to_aircraft: Some(sel_ac.clone()),
+                                        merge_into_active: false,
+                                        target_device: target_dev,
                                     });
                                     state.status_banner = Some((
                                         format!("Bound '{}' -> '{}'", sel_ac, rel_file),
@@ -1437,6 +1583,7 @@ fn render_builtin_verified_tab(
 
                         ui.add_space(4.0);
                         ui.horizontal_wrapped(|ui| {
+                            let target_dev = resolve_target_device(state, devices);
                             if ui
                                 .button(
                                     RichText::new("📥 Download & Activate Now")
@@ -1449,11 +1596,36 @@ fn render_builtin_verified_tab(
                                     repo_id: entry.id.clone(),
                                     activate_now: true,
                                     bind_to_aircraft: None,
+                                    merge_into_active: false,
+                                    target_device: target_dev.clone(),
                                 });
                                 state.status_banner = Some((
                                     format!(
                                         "Downloaded & activated '{}' (profiles/{})",
                                         entry.name, entry.filename
+                                    ),
+                                    false,
+                                ));
+                            }
+
+                            if ui
+                                .button(
+                                    RichText::new("➕ Merge into Active Profile")
+                                        .color(Color32::from_rgb(255, 210, 90)),
+                                )
+                                .clicked()
+                            {
+                                let _ = cmd_tx.send(GuiCommand::InstallRepositoryProfile {
+                                    repo_id: entry.id.clone(),
+                                    activate_now: true,
+                                    bind_to_aircraft: None,
+                                    merge_into_active: true,
+                                    target_device: target_dev.clone(),
+                                });
+                                state.status_banner = Some((
+                                    format!(
+                                        "Merged '{}' into active profile '{}'",
+                                        entry.name, active_profile_path
                                     ),
                                     false,
                                 ));
@@ -1474,6 +1646,8 @@ fn render_builtin_verified_tab(
                                         repo_id: entry.id.clone(),
                                         activate_now: true,
                                         bind_to_aircraft: Some(sel_ac.clone()),
+                                        merge_into_active: true,
+                                        target_device: target_dev,
                                     });
                                     state.status_banner = Some((
                                         format!(
@@ -1513,4 +1687,19 @@ fn render_builtin_verified_tab(
                 }
             });
         });
+}
+
+fn resolve_target_device(
+    state: &AircraftProfilesViewState,
+    devices: &[ConnectedDevice],
+) -> Option<TargetDeviceSpec> {
+    state
+        .target_device_selection
+        .and_then(|idx| devices.get(idx))
+        .map(|d| TargetDeviceSpec {
+            vendor_id: d.vendor_id,
+            product_id: d.product_id,
+            device_id: d.id.clone(),
+            device_name: d.name.clone(),
+        })
 }

@@ -249,31 +249,44 @@ pub fn render_aircraft_profiles_view(
 
     ui.add_space(8.0);
 
-    // Two-Column Main Workspace
-    ui.horizontal(|ui| {
+    // Two-Column Main Workspace with full available height
+    let avail_height = ui.available_height();
+    ui.horizontal_top(|ui| {
         // LEFT COLUMN: Profiles List
-        ui.vertical(|ui| {
-            ui.set_width(320.0);
-            render_profiles_list_panel(ui, state, &available_profiles, assignments, active_profile_path, cmd_tx, theme);
-        });
+        ui.allocate_ui_with_layout(
+            egui::vec2(320.0, avail_height),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| {
+                render_profiles_list_panel(ui, state, &available_profiles, assignments, active_profile_path, cmd_tx, theme);
+            },
+        );
 
         ui.separator();
 
         // RIGHT COLUMN: Selected Profile Detail View
-        ui.vertical(|ui| {
-            render_profile_details_panel(
-                ui,
-                state,
-                aircrafts,
-                assignments,
-                devices,
-                active_aircraft,
-                active_profile_name,
-                active_profile_path,
-                cmd_tx,
-                theme,
-            );
-        });
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), avail_height),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| {
+                ScrollArea::vertical()
+                    .id_salt("profile_details_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        render_profile_details_panel(
+                            ui,
+                            state,
+                            aircrafts,
+                            assignments,
+                            devices,
+                            active_aircraft,
+                            active_profile_name,
+                            active_profile_path,
+                            cmd_tx,
+                            theme,
+                        );
+                    });
+            },
+        );
     });
 }
 
@@ -337,7 +350,7 @@ fn render_profiles_list_panel(
 
     ScrollArea::vertical()
         .id_salt("profiles_list_scroll")
-        .max_height(ui.available_height() - 10.0)
+        .auto_shrink([false, false])
         .show(ui, |ui| {
             if filtered_profiles.is_empty() {
                 ui.add_space(20.0);
@@ -480,11 +493,12 @@ fn render_profile_details_panel(
 
     // 1. HEADER CARD: Profile Name & Core Actions
     ui_card(ui, theme, |ui| {
+        // Row 1: Profile Name Heading & Activation Status
         ui.horizontal(|ui| {
             if state.is_renaming {
                 ui.label(RichText::new("Rename:").color(theme.text_secondary));
-                ui.add(egui::TextEdit::singleline(&mut state.rename_profile_input).desired_width(220.0));
-                if ui.button(RichText::new("Save").color(theme.success).strong()).clicked() {
+                ui.add(egui::TextEdit::singleline(&mut state.rename_profile_input).desired_width(240.0));
+                if ui.button(RichText::new("✔ Save").color(theme.success).strong()).clicked() {
                     let clean = state.rename_profile_input.trim().to_string();
                     if !clean.is_empty() {
                         profile.name = Some(clean.clone());
@@ -498,89 +512,20 @@ fn render_profile_details_panel(
                 }
             } else {
                 ui.heading(RichText::new(&prof_name).color(theme.text_primary).strong());
-                if ui.button(RichText::new("✏ Rename").color(theme.text_secondary)).clicked() {
+                if ui.button(RichText::new("✏ Rename").color(theme.text_secondary).small()).clicked() {
                     state.is_renaming = true;
                     state.rename_profile_input = prof_name.clone();
                 }
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Delete button
-                if ui
-                    .button(RichText::new("🗑 Delete").color(theme.danger))
-                    .on_hover_text("Delete this local profile file permanently")
-                    .clicked()
-                {
-                    let _ = fs::remove_file(p_path);
-                    state.selected_profile_path = None;
-                    state.status_banner = Some((format!("Deleted profile '{}'", prof_name), false));
-                    return;
-                }
-
-                // Export button
-                if ui
-                    .button(RichText::new("📤 Export...").color(theme.text_secondary))
-                    .on_hover_text("Export a copy of this profile to any file or folder")
-                    .clicked()
-                {
-                    if let Some(dest) = rfd::FileDialog::new()
-                        .set_file_name(format!("{}.xml", prof_name))
-                        .add_filter("Profile XML", &["xml"])
-                        .save_file()
-                    {
-                        let _ = fs::copy(p_path, &dest);
-                        state.status_banner = Some((format!("Exported profile to {:?}", dest), false));
-                    }
-                }
-
-                // Duplicate button
-                if ui
-                    .button(RichText::new("📋 Duplicate").color(theme.text_secondary))
-                    .on_hover_text("Make a copy of this profile with all device layouts and patterns")
-                    .clicked()
-                {
-                    let copy_name = format!("{} (Copy)", prof_name);
-                    let filename: String = copy_name
-                        .chars()
-                        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '_' })
-                        .collect();
-                    let dest = PathBuf::from(format!("profiles/{}.xml", filename.trim()));
-                    let mut dup_prof = profile.clone();
-                    dup_prof.name = Some(copy_name.clone());
-                    if ProfileParser::save_file(&dest, &dup_prof).is_ok() {
-                        let dest_str = dest.to_string_lossy().to_string();
-                        state.selected_profile_path = Some(dest_str);
-                        state.status_banner = Some((format!("Duplicated profile as '{}'", copy_name), false));
-                    }
-                }
-
-                // Fallback toggle
-                if is_fallback {
-                    if ui
-                        .button(RichText::new("⭐ Generic Fallback (Active)").color(theme.warning).strong())
-                        .on_hover_text("This profile is loaded when no specific aircraft pattern matches. Click to unset.")
-                        .clicked()
-                    {
-                        let _ = cmd_tx.send(GuiCommand::SetDefaultProfile(None));
-                        state.status_banner = Some(("Unset default fallback profile".to_string(), false));
-                    }
-                } else if ui
-                    .button(RichText::new("Set as Fallback").color(theme.text_secondary))
-                    .on_hover_text("Use this profile as the generic fallback when no other aircraft profile matches")
-                    .clicked()
-                {
-                    let _ = cmd_tx.send(GuiCommand::SetDefaultProfile(Some(sel_path.clone())));
-                    state.status_banner = Some((format!("Set '{}' as generic fallback profile", prof_name), false));
-                }
-
-                // Activate button
                 if is_active {
                     let active_why = if !active_aircraft.is_empty() && profile.matches_aircraft_title(active_aircraft) {
-                        format!("● Active (Auto-matched to '{}')", active_aircraft)
+                        format!("Auto-matched to '{}'", active_aircraft)
                     } else if !active_aircraft.is_empty() && is_fallback {
-                        format!("● Active (Fallback for '{}')", active_aircraft)
+                        format!("Fallback for '{}'", active_aircraft)
                     } else {
-                        "● Active (Manually selected)".to_string()
+                        "Active (Manual)".to_string()
                     };
                     ui_status_badge(ui, &active_why, true, theme);
                 } else if ui
@@ -590,6 +535,78 @@ fn render_profile_details_panel(
                 {
                     let _ = cmd_tx.send(GuiCommand::LoadProfile(p_path.to_path_buf()));
                     state.status_banner = Some((format!("Activated profile '{}'", prof_name), false));
+                }
+            });
+        });
+
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(4.0);
+
+        // Row 2: Profile Actions (Fallback, Duplicate, Export, Delete)
+        ui.horizontal(|ui| {
+            if is_fallback {
+                if ui
+                    .button(RichText::new("⭐ Generic Fallback (Active)").color(theme.warning).strong().small())
+                    .on_hover_text("This profile is loaded when no specific aircraft pattern matches. Click to unset.")
+                    .clicked()
+                {
+                    let _ = cmd_tx.send(GuiCommand::SetDefaultProfile(None));
+                    state.status_banner = Some(("Unset default fallback profile".to_string(), false));
+                }
+            } else if ui
+                .button(RichText::new("☆ Set as Generic Fallback").color(theme.text_secondary).small())
+                .on_hover_text("Use this profile as the generic fallback when no other aircraft profile matches")
+                .clicked()
+            {
+                let _ = cmd_tx.send(GuiCommand::SetDefaultProfile(Some(sel_path.clone())));
+                state.status_banner = Some((format!("Set '{}' as generic fallback profile", prof_name), false));
+            }
+
+            if ui
+                .button(RichText::new("📋 Duplicate").color(theme.text_secondary).small())
+                .on_hover_text("Make a copy of this profile with all device layouts and patterns")
+                .clicked()
+            {
+                let copy_name = format!("{} (Copy)", prof_name);
+                let filename: String = copy_name
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '_' })
+                    .collect();
+                let dest = PathBuf::from(format!("profiles/{}.xml", filename.trim()));
+                let mut dup_prof = profile.clone();
+                dup_prof.name = Some(copy_name.clone());
+                if ProfileParser::save_file(&dest, &dup_prof).is_ok() {
+                    let dest_str = dest.to_string_lossy().to_string();
+                    state.selected_profile_path = Some(dest_str);
+                    state.status_banner = Some((format!("Duplicated profile as '{}'", copy_name), false));
+                }
+            }
+
+            if ui
+                .button(RichText::new("📤 Export...").color(theme.text_secondary).small())
+                .on_hover_text("Export a copy of this profile to any file or folder")
+                .clicked()
+            {
+                if let Some(dest) = rfd::FileDialog::new()
+                    .set_file_name(format!("{}.xml", prof_name))
+                    .add_filter("Profile XML", &["xml"])
+                    .save_file()
+                {
+                    let _ = fs::copy(p_path, &dest);
+                    state.status_banner = Some((format!("Exported profile to {:?}", dest), false));
+                }
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button(RichText::new("🗑 Delete Profile").color(theme.danger).small())
+                    .on_hover_text("Delete this local profile file permanently")
+                    .clicked()
+                {
+                    let _ = fs::remove_file(p_path);
+                    state.selected_profile_path = None;
+                    state.status_banner = Some((format!("Deleted profile '{}'", prof_name), false));
                 }
             });
         });

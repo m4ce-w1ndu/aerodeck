@@ -20,3 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live axis calibration, deadzone configuration, and visual response curves.
 - SimConnect network bridge and Steam Proton MSFS integration support.
 - About dialog with license information, repository links, and non-affiliation disclaimers.
+- Original vector and multi-size raster application icon (`assets/icon.svg`, `assets/icons/`, `assets/icon.ico`) wired into eframe window viewport and Linux desktop integration (`packaging/aerodeck.desktop`, hicolor icons).
+- Fixed profile picker height and two-column scroll area sizing in Profiles and Controller Mapping screens.
+- Fixed profile title truncation in details panel header by separating heading and action button bars into a responsive two-row card.

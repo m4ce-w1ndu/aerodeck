@@ -195,6 +195,7 @@ All tests pass with 100% verification.
 
 - **Author**: Simone Rolando
 - **Repository**: [https://github.com/m4ce-w1ndu/aerodeck](https://github.com/m4ce-w1ndu/aerodeck)
+- **App Icon**: Original geometric flight yoke & ascending aircraft motif (`assets/icon.svg`, multi-resolution PNGs and `.ico`).
 - **License**: Dual-licensed under either of:
   - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
   - MIT license ([LICENSE-MIT](LICENSE-MIT))

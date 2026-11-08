@@ -207,29 +207,49 @@ pub fn render_mapping_view(
     ui.add_space(6.0);
 
     // 2. MAIN TWO-COLUMN SPLIT (Left = Input List, Right = Details Panel)
-    ui.columns(2, |columns| {
+    let avail_height = ui.available_height();
+    ui.horizontal_top(|ui| {
         // --- LEFT COLUMN: Input List ---
-        render_input_list_column(
-            &mut columns[0],
-            state,
-            profile,
-            devices,
-            last_input,
-            live_axes,
-            theme,
+        ui.allocate_ui_with_layout(
+            egui::vec2(340.0, avail_height),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| {
+                render_input_list_column(
+                    ui,
+                    state,
+                    profile,
+                    devices,
+                    last_input,
+                    live_axes,
+                    theme,
+                );
+            },
         );
 
+        ui.separator();
+
         // --- RIGHT COLUMN: Details & Action Editor ---
-        render_input_details_column(
-            &mut columns[1],
-            state,
-            profile,
-            profile_path_input,
-            devices,
-            discovered_lvars,
-            live_axes,
-            cmd_tx,
-            theme,
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), avail_height),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| {
+                ScrollArea::vertical()
+                    .id_salt("mapping_details_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        render_input_details_column(
+                            ui,
+                            state,
+                            profile,
+                            profile_path_input,
+                            devices,
+                            discovered_lvars,
+                            live_axes,
+                            cmd_tx,
+                            theme,
+                        );
+                    });
+            },
         );
     });
 }
@@ -362,7 +382,7 @@ fn render_input_list_column(
 
         ScrollArea::vertical()
             .id_salt("mapping_inputs_scroll")
-            .max_height(ui.available_height() - 10.0)
+            .auto_shrink([false, false])
             .show_rows(ui, row_height, total_rows, |ui, row_range| {
                 for idx in row_range {
                     if let Some((ref input_id, is_axis, action_count, ref summary)) = filtered.get(idx) {

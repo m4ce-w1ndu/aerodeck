@@ -11,14 +11,27 @@ use app::SpadLinxApp;
 use backend::start_backend;
 use theme::AeroTheme;
 
+const APP_ICON_PNG: &[u8] = include_bytes!("../../assets/icons/icon_256x256.png");
+
+fn load_app_icon() -> Option<eframe::egui::IconData> {
+    eframe::icon_data::from_png_bytes(APP_ICON_PNG).ok()
+}
+
 pub fn run_gui(profile_path: Option<PathBuf>, simconnect_host: String, simconnect_port: u16) -> Result<()> {
     let (cmd_tx, event_rx) = start_backend(profile_path.clone(), simconnect_host.clone(), simconnect_port);
 
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_inner_size([1280.0, 840.0])
+        .with_min_inner_size([960.0, 600.0])
+        .with_title("AeroDeck - Flight Controller & Telemetry Suite")
+        .with_app_id("aerodeck");
+
+    if let Some(icon) = load_app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let native_options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 840.0])
-            .with_min_inner_size([960.0, 600.0])
-            .with_title("AeroDeck - Flight Controller & Telemetry Suite"),
+        viewport,
         ..Default::default()
     };
 

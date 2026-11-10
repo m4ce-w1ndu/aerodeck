@@ -98,17 +98,63 @@ pub fn lever_position(action: &EventActionRangedAxis, raw: i32, dev_min: i32, de
     ((raw - low_edge) / span).clamp(0.0, 1.0)
 }
 
-/// Sim events to send for a lever movement, with values in -16383..16383.
+/// True for throttles that drive reverse thrust past the idle detent
+/// (`LEVER_THROTTLE`, `LEVER_REVERSE_THROTTLE`; not `*_NOREVERSE_*`).
+pub fn has_reverse(action: &EventActionRangedAxis) -> bool {
+    let c = action.config_id.to_ascii_uppercase();
+    c.contains("THROTTLE") && !c.contains("NOREVERSE")
+}
+
+/// Reverse amount in `0.0..=1.0` when the lever is past the idle zone on the reverse side
+/// (0 at the end of the idle detent, 1 inside the `REVERSE`/`REVERSETO` zone); `None` in the
+/// forward range. Without a `REVERSE` zone the far end of the device range is full reverse.
+pub fn reverse_amount(action: &EventActionRangedAxis, raw: i32, dev_min: i32, dev_max: i32) -> Option<f64> {
+    if !has_reverse(action) {
+        return None;
+    }
+    let raw = raw as f64;
+    let idle = zone(action, "IDLE")?;
+    let high = zone(action, "MAX").unwrap_or(Zone::new(dev_max as f64, None));
+    let high_is_below = high.hi <= idle.lo;
+    // The reverse side is the side of the idle zone away from full thrust.
+    let (idle_far, past_idle) = if high_is_below { (idle.hi, raw > idle.hi) } else { (idle.lo, raw < idle.lo) };
+    if !past_idle {
+        return None;
+    }
+    let far_end = if high_is_below { dev_max.max(dev_min) as f64 } else { dev_min.min(dev_max) as f64 };
+    let rev = zone(action, "REVERSE").unwrap_or(Zone::new(far_end, None));
+    let rev_near = if high_is_below { rev.lo } else { rev.hi };
+    let span = rev_near - idle_far;
+    if span.abs() < f64::EPSILON {
+        return Some(1.0);
+    }
+    Some(((raw - idle_far) / span).clamp(0.0, 1.0))
+}
+
+/// Sim events to send for a lever movement.
+///
+/// Forward travel uses the `*_AXIS_SET_EX1` / `AXIS_*_SET` events (-16383 idle .. 16383 full).
+/// Past the idle detent of a reverse-capable throttle, `THROTTLEn_SET` with a negative value
+/// (0 .. -16383) is sent instead, which MSFS interprets as reverse thrust.
 pub fn lever_outputs(action: &EventActionRangedAxis, raw: i32, dev_min: i32, dev_max: i32) -> Option<Vec<(String, i32)>> {
     let kind = LeverKind::from_config_id(&action.config_id)?;
-    let pos = lever_position(action, raw, dev_min, dev_max);
-    let value = (-16383.0 + pos * 32766.0).round() as i32;
-
     let engines: Vec<u8> = if kind.per_engine() {
         (1..=4u8).filter(|n| action.option_bool(&format!("OPTION{}", n))).collect()
     } else {
         Vec::new()
     };
+    if let Some(rev) = reverse_amount(action, raw, dev_min, dev_max) {
+        let value = -(rev * 16383.0).round() as i32;
+        let out = if engines.is_empty() {
+            vec![("THROTTLE_SET".to_string(), value)]
+        } else {
+            engines.iter().map(|n| (format!("THROTTLE{}_SET", n), value)).collect()
+        };
+        return Some(out);
+    }
+    let pos = lever_position(action, raw, dev_min, dev_max);
+    let value = (-16383.0 + pos * 32766.0).round() as i32;
+
     let out = if engines.is_empty() {
         vec![(kind.event(None)?, value)]
     } else {
@@ -148,6 +194,31 @@ mod tests {
         assert_eq!(out(65535)[0].1, -16383, "reverse side ignored");
         let mid = out(48647 / 2)[0].1;
         assert!(mid.abs() <= 1, "halfway between idle and max is centre, got {}", mid);
+    }
+
+    #[test]
+    fn tca_reverse_past_idle_detent() {
+        // TCA: full = raw 0, idle detent ~49 000, lever pulled back to 65535 = full reverse
+        let l = lever(
+            "LEVER_THROTTLE",
+            &[("MAX", "0"), ("MAXTO", "0"), ("IDLE", "50934"), ("IDLETO", "48647"), ("OPTION1", "True")],
+        );
+        let out = |raw| lever_outputs(&l, raw, 0, 65535).unwrap();
+        assert_eq!(out(0), vec![("THROTTLE1_AXIS_SET_EX1".to_string(), 16383)]);
+        assert_eq!(out(49500), vec![("THROTTLE1_AXIS_SET_EX1".to_string(), -16383)], "inside detent = idle");
+        assert_eq!(out(65535), vec![("THROTTLE1_SET".to_string(), -16383)], "full reverse");
+        let half = out((50934 + 65535) / 2)[0].1;
+        assert!((-8300..=-8000).contains(&half), "half reverse, got {}", half);
+
+        // explicit reverse zone: everything beyond 60000 is full reverse
+        let mut z = l.clone();
+        z.set_option("REVERSE", "60000");
+        z.set_option("REVERSETO", "65535");
+        assert_eq!(lever_outputs(&z, 61000, 0, 65535).unwrap()[0].1, -16383);
+
+        // NOREVERSE keeps clamping to idle
+        let nr = lever("LEVER_NOREVERSE_THROTTLE", &[("MAX", "0"), ("IDLE", "50934"), ("IDLETO", "48647")]);
+        assert_eq!(lever_outputs(&nr, 65535, 0, 65535).unwrap(), vec![("AXIS_THROTTLE_SET".to_string(), -16383)]);
     }
 
     #[test]

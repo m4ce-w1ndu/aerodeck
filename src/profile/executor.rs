@@ -21,6 +21,8 @@ pub struct ProfileExecutor {
     press_counter: std::sync::atomic::AtomicU64,
     notices: std::sync::Mutex<Vec<String>>,
     noticed: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Axis trigger zones: "device|input|zone" -> currently inside
+    zone_state: std::sync::Mutex<HashMap<String, bool>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +93,7 @@ impl ProfileExecutor {
             press_counter: std::sync::atomic::AtomicU64::new(0),
             notices: std::sync::Mutex::new(Vec::new()),
             noticed: std::sync::Mutex::new(std::collections::HashSet::new()),
+            zone_state: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -233,13 +236,33 @@ impl ProfileExecutor {
     pub async fn dispatch_axis_event(&self, device_id: &str, bound_to: &str, raw: i32, min: i32, max: i32) -> Result<bool> {
         let sent = self.dispatch_axis_inner(device_id, bound_to, raw, min, max).await?;
         if sent.is_empty() {
-            self.note_unmapped(device_id, bound_to);
+            // Inputs with only trigger zones send nothing between zone changes.
+            if self.matching_definitions(device_id, bound_to).await.is_empty() {
+                self.note_unmapped(device_id, bound_to);
+            }
         } else {
             self.note_once(format!("sent:{}:{}", device_id, bound_to), || {
                 format!("{} on {} -> {}", bound_to, device_label(device_id), sent.join(", "))
             });
         }
         Ok(!sent.is_empty())
+    }
+
+    /// Runs one definition if its conditions hold (used by axis trigger zones).
+    async fn run_definition(&self, def: &EventDefinition, trigger: &str) -> Result<()> {
+        if def.actions.as_ref().is_none_or(|a| a.items.is_empty()) {
+            return Ok(());
+        }
+        let lvars = self.bridge.get_lvar_values().await;
+        let simvars = self.simconnect.simvar_snapshot();
+        let locals = self.local_vars.lock().await.clone();
+        let pmdg = self.simconnect.pmdg_snapshot();
+        let ok = ConditionEvaluator::new(&lvars, &locals).with_simvars(&simvars).with_pmdg(&pmdg).evaluate_definition(def);
+        if ok {
+            info!("Axis zone: Trigger='{}'", trigger);
+            self.execute_actions(def, trigger, false).await?;
+        }
+        Ok(())
     }
 
     /// Notices for the UI log (unmapped inputs, first successful use), drained by the caller.
@@ -284,6 +307,53 @@ impl ProfileExecutor {
         let position = axis_position(raw, min, max);
         let mut sent: Vec<String> = Vec::new();
 
+        // Trigger zones (ZONE_ENTER / ZONE_LEAVE), with hysteresis against chattering.
+        let mut zone_defs: Vec<(AxisZone, &EventDefinition)> =
+            defs.iter().filter_map(|d| AxisZone::of(d).map(|z| (z, *d))).collect();
+        zone_defs.sort_by(|a, b| a.0.min.total_cmp(&b.0.min));
+        let mut seen_zone_keys: Vec<String> = Vec::new();
+        let mut bands: Vec<(f64, f64)> = Vec::new();
+        // (zone key, entered) for every zone whose state changed with this movement
+        let mut transitions: Vec<(String, bool)> = Vec::new();
+        for (zone, _) in &zone_defs {
+            let key = zone.key();
+            if seen_zone_keys.contains(&key) {
+                continue;
+            }
+            seen_zone_keys.push(key.clone());
+            bands.extend(zone.frozen_band());
+            let state_key = format!("{}|{}|{}", device_id, bound_to, key);
+            let prev = self.zone_state.lock().ok().and_then(|m| m.get(&state_key).copied());
+            let next = zone.next_state(prev.unwrap_or(false), position * 100.0);
+            if let Ok(mut m) = self.zone_state.lock() {
+                m.insert(state_key, next);
+            }
+            // First reading: only an entry is reported (syncs the sim to the lever).
+            let changed = match prev {
+                Some(p) => p != next,
+                None => next,
+            };
+            if changed {
+                sent.push(format!("zone {:.0}-{:.0}% {}", zone.min, zone.max, if next { "enter" } else { "leave" }));
+                transitions.push((key, next));
+            }
+        }
+        // Leaving runs before the axis moves again (disarm, then extend); entering runs
+        // after the axis has been parked at the band edge (retract, then arm).
+        self.run_zone_transitions(&zone_defs, &transitions, false).await?;
+
+        // Proportional output skips the frozen bands around zones that have a deadzone:
+        // the rest of the travel is stretched to the full range, and inside a band the
+        // edge value is sent once and the axis is then left alone.
+        let (position, send_axis) = if bands.is_empty() {
+            (position, true)
+        } else {
+            let (p, inside) = axis_outside_bands(position * 100.0, &bands);
+            let band_key = format!("{}|{}|band", device_id, bound_to);
+            let was_inside = self.zone_state.lock().ok().and_then(|mut m| m.insert(band_key, inside));
+            (p, !(inside && was_inside == Some(true)))
+        };
+
         for def in defs {
             // Axis movements only fire VALUE (or trigger-less) definitions; PRESS/RELEASE
             // definitions on the same input belong to its push-button.
@@ -294,6 +364,9 @@ impl ProfileExecutor {
             let Some(actions) = &def.actions else { continue };
             for act in &actions.items {
                 if let EventActionItem::RangedAxis(lever) = act {
+                    if !send_axis {
+                        continue;
+                    }
                     match super::lever::lever_outputs(lever, raw, min, max) {
                         Some(outputs) => {
                             for (event_name, value) in outputs {
@@ -315,6 +388,9 @@ impl ProfileExecutor {
                     EventActionItem::CustomAxis(caxis) => (caxis.target.as_str(), option_is_true(caxis.options.as_ref(), "INVERTAXIS")),
                     _ => continue,
                 };
+                if !send_axis {
+                    continue;
+                }
                 let Some(event_name) = sim_event_name(target) else {
                     debug!("Axis target '{}' is not a SimConnect event; skipped", target);
                     continue;
@@ -331,7 +407,26 @@ impl ProfileExecutor {
             }
         }
 
+        self.run_zone_transitions(&zone_defs, &transitions, true).await?;
         Ok(sent)
+    }
+
+    /// Runs the `ZONE_ENTER` (`entered`) or `ZONE_LEAVE` definitions of the zones that changed.
+    async fn run_zone_transitions(
+        &self,
+        zone_defs: &[(AxisZone, &EventDefinition)],
+        transitions: &[(String, bool)],
+        entered: bool,
+    ) -> Result<()> {
+        let trigger = if entered { "ZONE_ENTER" } else { "ZONE_LEAVE" };
+        for (key, _) in transitions.iter().filter(|(_, e)| *e == entered) {
+            for (z, def) in zone_defs {
+                if &z.key() == key && def.trigger.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(trigger)) {
+                    self.run_definition(def, trigger).await?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Triggers an input event from a hardware device (e.g. bound_to: "AP_BUTTON", trigger: "PRESSED")

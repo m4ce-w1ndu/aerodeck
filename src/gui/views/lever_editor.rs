@@ -10,8 +10,9 @@ use crate::gui::widgets::{ui_card, ui_tag_pill};
 use crate::profile::lever::{lever_outputs, lever_position};
 use crate::profile::schema::{EventActionItem, EventActionRangedAxis, SpadProfile};
 
-pub const LEVER_KINDS: [(&str, &str); 5] = [
+pub const LEVER_KINDS: [(&str, &str); 6] = [
     ("LEVER_NOREVERSE_THROTTLE", "Throttle"),
+    ("LEVER_THROTTLE", "Throttle + reverse"),
     ("LEVER_MIXTURE", "Mixture"),
     ("LEVER_PROPELLER", "Propeller"),
     ("LEVER_FLAPS", "Flaps"),
@@ -177,8 +178,19 @@ pub fn render_lever_card(
         ui.add_space(6.0);
         // Zone editing
         let low = d.low_key();
+        let reverse = crate::profile::lever::has_reverse(&d.action);
+        // Full reverse defaults to the far end of the travel, past the idle detent.
+        let far_end = if d.get("MAX") <= d.get("IDLE") { dev_min.max(dev_max) } else { dev_min.min(dev_max) };
+        if reverse && d.action.option("REVERSE").is_none() {
+            d.set("REVERSE", far_end);
+            d.set("REVERSETO", far_end);
+        }
+        let mut rows = vec![("MAX", "Full", theme.success), (low, if low == "IDLE" { "Idle" } else { "Minimum" }, theme.warning)];
+        if reverse {
+            rows.push(("REVERSE", "Reverse", theme.danger));
+        }
         egui::Grid::new("lever_zone_grid").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
-            for (key, label, color) in [("MAX", "Full", theme.success), (low, if low == "IDLE" { "Idle" } else { "Minimum" }, theme.warning)] {
+            for (key, label, color) in rows {
                 ui.label(RichText::new(label).color(color).strong());
                 let mut a = d.get(key);
                 let mut b = d.get(&format!("{}TO", key));
@@ -196,9 +208,15 @@ pub fn render_lever_card(
                     if let Some(r) = raw {
                         // A small zone around the detent so it is easy to hit.
                         let pad = ((dev_max - dev_min).abs() / 100).max(1);
-                        let toward_full = if key == "MAX" { 0 } else { (d.get("MAX") - r).signum() * pad * 2 };
-                        d.set(key, r);
-                        d.set(&format!("{}TO", key), r + toward_full);
+                        if key == "REVERSE" {
+                            // Full reverse from here to the end of the travel
+                            d.set(key, r);
+                            d.set("REVERSETO", far_end);
+                        } else {
+                            let toward_full = if key == "MAX" { 0 } else { (d.get("MAX") - r).signum() * pad * 2 };
+                            d.set(key, r);
+                            d.set(&format!("{}TO", key), r + toward_full);
+                        }
                     }
                 }
                 ui.end_row();
@@ -245,6 +263,10 @@ fn paint_lever_bar(ui: &mut Ui, d: &LeverDraft, raw: Option<i32>, dev_min: i32, 
     let tint = |c: Color32| Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 90);
     zone(d.get("MAX"), d.get("MAXTO"), tint(theme.success));
     zone(d.get(low), d.get(&format!("{}TO", low)), tint(theme.warning));
+    let reverse = crate::profile::lever::has_reverse(&d.action) && d.action.option("REVERSE").is_some();
+    if reverse {
+        zone(d.get("REVERSE"), d.get("REVERSETO"), tint(theme.danger));
+    }
 
     // Linear range between the zones
     let (full_edge, low_edge) = (d.get("MAXTO"), d.get(&format!("{}TO", low)));
@@ -258,5 +280,8 @@ fn paint_lever_bar(ui: &mut Ui, d: &LeverDraft, raw: Option<i32>, dev_min: i32, 
     let font = egui::FontId::proportional(11.0);
     painter.text(Pos2::new(label_x(d.get("MAX")), rect.max.y + 1.0), egui::Align2::CENTER_TOP, "FULL", font.clone(), theme.success);
     let low_label = if low == "IDLE" { "IDLE" } else { "MIN" };
-    painter.text(Pos2::new(label_x(d.get(low)), rect.max.y + 1.0), egui::Align2::CENTER_TOP, low_label, font, theme.warning);
+    painter.text(Pos2::new(label_x(d.get(low)), rect.max.y + 1.0), egui::Align2::CENTER_TOP, low_label, font.clone(), theme.warning);
+    if reverse {
+        painter.text(Pos2::new(label_x(d.get("REVERSE")), rect.max.y + 1.0), egui::Align2::CENTER_TOP, "REV", font, theme.danger);
+    }
 }

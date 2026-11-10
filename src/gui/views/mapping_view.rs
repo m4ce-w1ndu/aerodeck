@@ -58,6 +58,10 @@ pub struct MappingViewState {
     pub pmdg_param_idx: usize,
     /// Category filter in the SimConnect event picker (None = all)
     pub sim_event_category: Option<&'static str>,
+    /// Trigger zone being added on the selected axis
+    pub zone_draft: crate::gui::views::axis_zones::ZoneDraft,
+    /// Zone (`AxisZone::key`) the add-action form attaches ZONE_ENTER / ZONE_LEAVE actions to
+    pub zone_target: Option<String>,
 }
 
 /// PMDG event parameters: (label, value). Values are PMDG mouse flags.
@@ -121,6 +125,8 @@ impl Default for MappingViewState {
             pmdg_event: String::new(),
             pmdg_param_idx: 0,
             sim_event_category: None,
+            zone_draft: Default::default(),
+            zone_target: None,
         }
     }
 }
@@ -601,6 +607,14 @@ fn render_input_details_column(
             }
         }
         ui.add_space(6.0);
+        let live = live_axes
+            .get(&state.selected_input)
+            .or_else(|| active_dev.and_then(|d| live_axes.get(&format!("{}:{}", d.name, state.selected_input))));
+        let input = state.selected_input.clone();
+        if crate::gui::views::axis_zones::render_zone_card(ui, &mut state.zone_draft, profile, active_dev, &input, live, theme) {
+            save_profile_now(profile, profile_path_input, cmd_tx);
+        }
+        ui.add_space(6.0);
     }
 
     // Configured Actions Section
@@ -745,7 +759,11 @@ fn render_configured_actions_section(
                                                 action_cards_count += 1;
                                                 ui_elevated_card(ui, theme, |ui| {
                                                     ui.horizontal(|ui| {
-                                                        ui_tag_pill(ui, &trigger_label(trigger), theme.accent, theme);
+                                                        let label = match crate::profile::schema::AxisZone::of(def) {
+                                                            Some(z) => format!("{} {:.0}–{:.0}%", trigger_label(trigger), z.min, z.max),
+                                                            None => trigger_label(trigger),
+                                                        };
+                                                        ui_tag_pill(ui, &label, theme.accent, theme);
 
                                                         match act {
                                                             EventActionItem::Control(c) => {
@@ -900,13 +918,35 @@ fn render_inline_add_action_form(
                     }
                 });
             }
+            let zones = active_dev
+                .map(|d| crate::gui::views::axis_zones::zones_for_input(profile, d, &state.selected_input))
+                .unwrap_or_default();
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("Trigger:").color(theme.text_secondary).small());
                 for (kind, label, tip) in TRIGGER_KINDS {
                     ui.selectable_value(&mut state.trigger_kind, kind.to_string(), label).on_hover_text(tip);
                 }
+                if !zones.is_empty() {
+                    ui.selectable_value(&mut state.trigger_kind, "ZONE_ENTER".to_string(), "Zone enter")
+                        .on_hover_text("Fires when the axis moves into a trigger zone");
+                    ui.selectable_value(&mut state.trigger_kind, "ZONE_LEAVE".to_string(), "Zone leave")
+                        .on_hover_text("Fires when the axis moves out of a trigger zone");
+                }
             });
-            state.selected_trigger = if is_hat {
+            let zone_trigger = state.trigger_kind.starts_with("ZONE_");
+            if zone_trigger {
+                if !state.zone_target.as_ref().is_some_and(|k| zones.iter().any(|z| &z.zone.key() == k)) {
+                    state.zone_target = zones.first().map(|z| z.zone.key());
+                }
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Zone:").color(theme.text_secondary).small());
+                    for z in &zones {
+                        let key = z.zone.key();
+                        ui.selectable_value(&mut state.zone_target, Some(key), format!("{:.1}–{:.1}%", z.zone.min, z.zone.max));
+                    }
+                });
+            }
+            state.selected_trigger = if is_hat && !zone_trigger {
                 format!("POV_{}_{}", state.pov_dir, state.trigger_kind)
             } else {
                 state.trigger_kind.clone()
@@ -1099,12 +1139,29 @@ fn save_action_to_profile(
         None
     };
 
+    // Zone triggers carry the zone of the definition they belong to.
+    let zone_options = if state.selected_trigger.starts_with("ZONE_") {
+        let Some(zone) = state.zone_target.as_ref().and_then(|key| {
+            defs.items.iter().filter_map(crate::profile::schema::AxisZone::of).find(|z| &z.key() == key)
+        }) else {
+            return;
+        };
+        Some(zone.to_options())
+    } else {
+        None
+    };
+    let same_zone = |d: &EventDefinition| match &state.zone_target {
+        Some(key) if zone_options.is_some() => crate::profile::schema::AxisZone::of(d).is_some_and(|z| &z.key() == key),
+        _ => true,
+    };
+
     // Same trigger, no condition: add to the existing definition (one definition per trigger)
     // instead of stacking IsFinal definitions where only the first would run.
     defs.items.retain(|d| d.actions.as_ref().is_some_and(|a| !a.items.is_empty()));
     if conditions.is_none() {
         if let Some(existing) = defs.items.iter_mut().find(|d| {
             d.conditions.as_ref().is_none_or(|c| c.items.is_empty())
+                && same_zone(d)
                 && crate::profile::executor::trigger_matches(d.trigger.as_deref().unwrap_or(""), &state.selected_trigger)
         }) {
             existing.actions.get_or_insert_with(|| crate::profile::schema::EventActionsList { items: Vec::new() }).items.push(action_item);
@@ -1114,7 +1171,8 @@ fn save_action_to_profile(
     defs.items.push(EventDefinition {
         trigger: Some(state.selected_trigger.clone()),
         priority: None,
-        is_final: Some(true),
+        is_final: Some(zone_options.is_none()),
+        options: zone_options,
         condition_binding: None,
         conditions,
         actions: Some(crate::profile::schema::EventActionsList { items: vec![action_item] }),
@@ -1141,15 +1199,13 @@ fn add_axis_action_to_profile(
     set_value_definition(profile, conn_dev, bound_to, vec![action]);
 }
 
-/// Replaces the axis (`VALUE`) definitions of an input with one holding `actions`, keeping
-/// any button-style definitions (`PRESSSHORT`, ...) bound to the same input.
-fn set_value_definition(
-    profile: &mut Option<SpadProfile>,
+/// Event definitions of `bound_to` on the connected device's first page, created if missing.
+pub(crate) fn input_definitions_mut<'a>(
+    profile: &'a mut Option<SpadProfile>,
     conn_dev: &ConnectedDevice,
     bound_to: &str,
-    actions: Vec<EventActionItem>,
-) {
-    let Some(ref mut prof) = profile else { return };
+) -> Option<&'a mut EventDefinitionsList> {
+    let prof = profile.as_mut()?;
     let dev_prof = prof.ensure_device_for_connected(conn_dev.vendor_id, conn_dev.product_id, &conn_dev.id, &conn_dev.name, None);
     if dev_prof.pages.is_empty() {
         dev_prof.pages.push(crate::profile::schema::DevicePage {
@@ -1171,7 +1227,18 @@ fn set_value_definition(
             events.items.len() - 1
         }
     };
-    let defs = events.items[idx].event_definitions.get_or_insert_with(|| EventDefinitionsList { items: Vec::new() });
+    Some(events.items[idx].event_definitions.get_or_insert_with(|| EventDefinitionsList { items: Vec::new() }))
+}
+
+/// Replaces the axis (`VALUE`) definitions of an input with one holding `actions`, keeping
+/// any button-style definitions (`PRESSSHORT`, ...) and trigger zones bound to the same input.
+fn set_value_definition(
+    profile: &mut Option<SpadProfile>,
+    conn_dev: &ConnectedDevice,
+    bound_to: &str,
+    actions: Vec<EventActionItem>,
+) {
+    let Some(defs) = input_definitions_mut(profile, conn_dev, bound_to) else { return };
     defs.items.retain(|d| !d.trigger.as_deref().unwrap_or("").eq_ignore_ascii_case("VALUE"));
     defs.items.insert(
         0,
@@ -1179,6 +1246,7 @@ fn set_value_definition(
             trigger: Some("VALUE".to_string()),
             priority: None,
             is_final: Some(true),
+            options: None,
             condition_binding: None,
             conditions: None,
             actions: Some(crate::profile::schema::EventActionsList { items: actions }),

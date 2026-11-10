@@ -185,6 +185,11 @@ pub struct EventDefinition {
 
     #[serde(rename = "EventActions", default, skip_serializing_if = "Option::is_none")]
     pub actions: Option<EventActionsList>,
+
+    /// Per-definition options. Axis trigger zones use `ZONEMIN` / `ZONEMAX` (percent of
+    /// travel) and `HYSTERESIS` (percent) with the `ZONE_ENTER` / `ZONE_LEAVE` triggers.
+    #[serde(rename = "Options", default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<ProfileOptionsList>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1068,4 +1073,99 @@ mod lenient {
     pub fn num_or_zero<'de, D: Deserializer<'de>, T: FromStr + Default>(d: D) -> Result<T, D::Error> {
         Ok(opt_num(d)?.unwrap_or_default())
     }
+}
+
+/// Axis trigger zone of a `ZONE_ENTER` / `ZONE_LEAVE` definition, in percent of travel.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AxisZone {
+    pub min: f64,
+    pub max: f64,
+    pub hysteresis: f64,
+    /// Gap (percent) on both sides of the zone where the input's proportional axis output
+    /// is frozen, so a zone at the end of the travel (spoiler ARM) does not move the axis.
+    /// `None`: the zone only fires triggers and the axis output is untouched.
+    pub deadzone: Option<f64>,
+}
+
+impl AxisZone {
+    pub const DEFAULT_HYSTERESIS: f64 = 3.0;
+
+    pub fn of(def: &EventDefinition) -> Option<Self> {
+        let t = def.trigger.as_deref()?.to_ascii_uppercase();
+        if t != "ZONE_ENTER" && t != "ZONE_LEAVE" {
+            return None;
+        }
+        let get = |k: &str| {
+            def.options
+                .as_ref()?
+                .items
+                .iter()
+                .find(|o| o.key.eq_ignore_ascii_case(k))
+                .and_then(|o| o.value.as_deref())
+                .and_then(|v| v.trim().parse::<f64>().ok())
+        };
+        let (a, b) = (get("ZONEMIN")?, get("ZONEMAX")?);
+        Some(Self {
+            min: a.min(b).clamp(0.0, 100.0),
+            max: a.max(b).clamp(0.0, 100.0),
+            hysteresis: get("HYSTERESIS").unwrap_or(Self::DEFAULT_HYSTERESIS).max(0.0),
+            deadzone: get("DEADZONE").map(|d| d.max(0.0)),
+        })
+    }
+
+    pub fn to_options(self) -> ProfileOptionsList {
+        let o = |k: &str, v: f64| ProfileOption { key: k.to_string(), value: Some(format!("{}", v)) };
+        let mut items = vec![o("ZONEMIN", self.min), o("ZONEMAX", self.max), o("HYSTERESIS", self.hysteresis)];
+        if let Some(d) = self.deadzone {
+            items.push(o("DEADZONE", d));
+        }
+        ProfileOptionsList { items }
+    }
+
+    /// Travel (percent) where the proportional axis output is frozen: the zone plus its
+    /// deadzone, and at least the hysteresis band so the zone is left (e.g. spoilers
+    /// disarmed) before the axis starts moving again.
+    pub fn frozen_band(self) -> Option<(f64, f64)> {
+        let pad = self.deadzone?.max(self.hysteresis);
+        Some(((self.min - pad).max(0.0), (self.max + pad).min(100.0)))
+    }
+
+    /// Next inside/outside state for position `pos` (percent): entering needs the zone
+    /// itself, leaving needs to pass the hysteresis band, so the edge does not chatter.
+    pub fn next_state(self, inside: bool, pos: f64) -> bool {
+        if inside {
+            pos >= self.min - self.hysteresis && pos <= self.max + self.hysteresis
+        } else {
+            pos >= self.min && pos <= self.max
+        }
+    }
+
+    /// Key shared by the ENTER and LEAVE definitions of the same zone.
+    pub fn key(self) -> String {
+        format!("{:.2}-{:.2}", self.min, self.max)
+    }
+}
+
+/// Maps an axis position (percent) onto `0.0..=1.0` over the travel left outside the frozen
+/// `bands`, so the remaining range still covers the full output. Returns the output and
+/// whether the position is inside a band (where the output stays at the band's edge).
+pub fn axis_outside_bands(pos: f64, bands: &[(f64, f64)]) -> (f64, bool) {
+    let pos = pos.clamp(0.0, 100.0);
+    let mut merged: Vec<(f64, f64)> = bands.iter().copied().filter(|(a, b)| b > a).collect();
+    merged.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut joined: Vec<(f64, f64)> = Vec::new();
+    for (a, b) in merged {
+        match joined.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => joined.push((a, b)),
+        }
+    }
+    let frozen: f64 = joined.iter().map(|(a, b)| b - a).sum();
+    let free = 100.0 - frozen;
+    let below: f64 = joined.iter().map(|(a, b)| (pos.min(*b) - a).max(0.0)).sum();
+    let inside = joined.iter().any(|(a, b)| pos >= *a && pos <= *b);
+    if free <= f64::EPSILON {
+        return (0.0, inside);
+    }
+    (((pos - below) / free).clamp(0.0, 1.0), inside)
 }

@@ -293,6 +293,7 @@ fn test_per_device_layout_replacement_and_undo() {
                             trigger: Some("VALUE".to_string()),
                             priority: None,
                             is_final: None,
+                            options: None,
                             condition_binding: None,
                             conditions: None,
                             actions: Some(EventActionsList {

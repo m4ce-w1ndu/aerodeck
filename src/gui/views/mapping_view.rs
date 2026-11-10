@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use crate::gui::app::LiveAxisState;
 use crate::gui::backend::GuiCommand;
-use crate::gui::presets::{COMMON_CALCULATOR_CODES, SIMCONNECT_AXIS_PRESETS, SIMCONNECT_PRESETS};
+use crate::gui::presets::{COMMON_CALCULATOR_CODES, SIMCONNECT_AXIS_PRESETS};
 use crate::gui::theme::AeroTheme;
 use crate::gui::widgets::{
     ui_card, ui_clickable_card, ui_clickable_row_card, ui_elevated_card, ui_smooth_axis_bar,
@@ -29,7 +29,6 @@ pub struct MappingViewState {
     // Add action form state (collapsed by default, expands inline)
     pub show_add_action_form: bool,
     pub new_action_type: ActionTypeChoice,
-    pub selected_preset_idx: usize,
     pub custom_target: String,
     pub action_value: String,
     pub selected_trigger: String,
@@ -44,6 +43,37 @@ pub struct MappingViewState {
     pub axis_invert: bool,
     pub axis_deadzone_pct: f32,
     pub selected_axis_preset_idx: usize,
+
+    pub axis_mode: AxisMode,
+    pub lever_draft: Option<crate::gui::views::lever_editor::LeverDraft>,
+    /// Hat direction picked in the add-action form (`NORTH`, ...)
+    pub pov_dir: String,
+    /// Trigger kind picked in the add-action form (`PRESS`, `PRESSLONG`, ...)
+    pub trigger_kind: String,
+
+    // PMDG event picker
+    pub pmdg_family_idx: usize,
+    pub pmdg_query: String,
+    pub pmdg_event: String,
+    pub pmdg_param_idx: usize,
+    /// Category filter in the SimConnect event picker (None = all)
+    pub sim_event_category: Option<&'static str>,
+}
+
+/// PMDG event parameters: (label, value). Values are PMDG mouse flags.
+const PMDG_PARAMS: [(&str, u32); 4] = [
+    ("Click", crate::pmdg::MOUSE_FLAG_LEFTSINGLE),
+    ("Wheel up (knob clockwise)", crate::pmdg::MOUSE_FLAG_WHEEL_UP),
+    ("Wheel down (knob counter-clockwise)", crate::pmdg::MOUSE_FLAG_WHEEL_DOWN),
+    ("Release", crate::pmdg::MOUSE_FLAG_LEFTRELEASE),
+];
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum AxisMode {
+    /// One sim axis event (ailerons, elevator, ...)
+    Simple,
+    /// Calibrated lever with full / idle zones (throttle quadrants)
+    Lever,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -56,8 +86,8 @@ pub enum InputFilterType {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ActionTypeChoice {
-    SimConnectPreset,
     SimConnectCustom,
+    Pmdg,
     Lvar,
     CalculatorCode,
 }
@@ -71,8 +101,7 @@ impl Default for MappingViewState {
             follow_active_input: true,
             input_type_filter: InputFilterType::All,
             show_add_action_form: false,
-            new_action_type: ActionTypeChoice::SimConnectPreset,
-            selected_preset_idx: 0,
+            new_action_type: ActionTypeChoice::SimConnectCustom,
             custom_target: "SIMCONNECT:TOGGLE_MASTER_BATTERY".to_string(),
             action_value: "1".to_string(),
             selected_trigger: "PRESS".to_string(),
@@ -83,6 +112,15 @@ impl Default for MappingViewState {
             axis_invert: false,
             axis_deadzone_pct: 1.0,
             selected_axis_preset_idx: 0,
+            axis_mode: AxisMode::Simple,
+            lever_draft: None,
+            pov_dir: "NORTH".to_string(),
+            trigger_kind: "PRESS".to_string(),
+            pmdg_family_idx: 0,
+            pmdg_query: String::new(),
+            pmdg_event: String::new(),
+            pmdg_param_idx: 0,
+            sim_event_category: None,
         }
     }
 }
@@ -141,7 +179,7 @@ pub fn render_mapping_view(
                 let dot_color = if mapped_count > 0 { theme.success } else { theme.text_muted };
                 let chip_builder = |ui: &mut Ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("●").color(dot_color).small());
+                        ui.label(RichText::new("⏺").color(dot_color).small());
                         ui.label(
                             RichText::new(format!("{} ({} mapped)", dev.name, mapped_count))
                                 .color(if is_selected { theme.accent } else { theme.text_primary })
@@ -174,7 +212,7 @@ pub fn render_mapping_view(
                             .small()
                             .strong(),
                     );
-                    ui.label(RichText::new("●").color(dot_col).small());
+                    ui.label(RichText::new("⏺").color(dot_col).small());
                 } else {
                     ui.label(RichText::new("Awaiting hardware input...").color(theme.text_muted).small().italics());
                 }
@@ -279,7 +317,7 @@ fn render_input_list_column(
                     .hint_text("🔍 Search inputs...")
                     .desired_width(ui.available_width() - 24.0),
             );
-            if !state.filter_query.is_empty() && ui.small_button("✕").clicked() {
+            if !state.filter_query.is_empty() && ui.small_button("✖").clicked() {
                 state.filter_query.clear();
             }
         });
@@ -315,7 +353,7 @@ fn render_input_list_column(
                 if let Some(ref evs) = page.events {
                     for ev in &evs.items {
                         if !all_inputs.iter().any(|(id, _)| id.eq_ignore_ascii_case(&ev.bound_to)) {
-                            let is_ax = ev.bound_to.contains("AXIS") || ev.bound_to.contains("THROTTLE") || ev.bound_to.contains("RUDDER");
+                            let is_ax = is_axis_input_name(&ev.bound_to);
                             all_inputs.push((ev.bound_to.clone(), is_ax));
                         }
                     }
@@ -350,7 +388,8 @@ fn render_input_list_column(
                                     }
                                     EventActionItem::ChangeValue(cv) => format!("LVAR:{}", cv.target.strip_prefix("LVAR:").unwrap_or(&cv.target)),
                                     EventActionItem::Script(_) => "RPN Script".to_string(),
-                                    EventActionItem::CustomAxis(ca) => ca.target.clone(),
+                                    EventActionItem::CustomAxis(ca) => ca.target.strip_prefix("SIMCONNECT:").unwrap_or(&ca.target).to_string(),
+                                    EventActionItem::RangedAxis(ra) => format!("Lever {}", ra.config_id.trim_start_matches("LEVER_").replace("NOREVERSE_", "").to_lowercase()),
                                     _ => "Action".to_string(),
                                 })
                             })
@@ -404,22 +443,19 @@ fn render_input_list_column(
                             ui.horizontal(|ui| {
                                 // Mapped indicator
                                 let (dot_icon, dot_col) = if is_live_active {
-                                    ("●", theme.accent)
+                                    ("⏺", theme.accent)
                                 } else if *action_count > 0 {
-                                    ("●", theme.success)
+                                    ("⏺", theme.success)
                                 } else {
                                     ("○", theme.text_muted)
                                 };
                                 ui.label(RichText::new(dot_icon).color(dot_col).small().strong());
 
                                 // Input name
-                                let label_text = if *is_axis {
-                                    format!("⚡ {}", input_id)
-                                } else {
-                                    (*input_id).clone()
-                                };
+                                let icon = if *is_axis { "⚡" } else if input_id.starts_with("HATSWITCH") { "🕹" } else { " " };
+                                ui.label(RichText::new(icon).color(theme.text_muted).small());
                                 ui.label(
-                                    RichText::new(label_text)
+                                    RichText::new(input_label(input_id))
                                         .color(if is_selected { theme.accent } else { theme.text_primary })
                                         .strong(),
                                 );
@@ -495,15 +531,16 @@ fn render_input_details_column(
         return;
     }
 
-    let is_axis = state.selected_input.contains("AXIS")
-        || state.selected_input.contains("THROTTLE")
-        || state.selected_input.contains("RUDDER");
+    let is_axis = active_dev
+        .map(|d| d.axes.iter().any(|a| a.eq_ignore_ascii_case(&state.selected_input)))
+        .unwrap_or(false)
+        || is_axis_input_name(&state.selected_input);
 
     // Header Card for Selected Input
     ui_card(ui, theme, |ui| {
         ui.horizontal(|ui| {
             ui.heading(
-                RichText::new(format!("Input: {}", state.selected_input))
+                RichText::new(input_label(&state.selected_input))
                     .color(theme.text_primary)
                     .strong(),
             );
@@ -512,7 +549,7 @@ fn render_input_details_column(
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(RichText::new("✕ Deselect").color(theme.text_muted).small()).clicked() {
+                if ui.button(RichText::new("✖ Deselect").color(theme.text_muted).small()).clicked() {
                     state.selected_input.clear();
                 }
             });
@@ -523,7 +560,46 @@ fn render_input_details_column(
 
     // If input is an Axis: Live Axis Telemetry & Calibration
     if is_axis {
-        render_axis_telemetry_card(ui, state, profile, profile_path_input, active_dev, live_axes, cmd_tx, theme);
+        let existing = active_dev.and_then(|d| {
+            crate::gui::views::lever_editor::existing_lever(profile, d.vendor_id, d.product_id, &d.id, &state.selected_input)
+        });
+        // Default to the lever editor for quadrants and inputs that already have a lever.
+        if state.lever_draft.as_ref().map(|l| l.input != state.selected_input).unwrap_or(true) {
+            let quadrant = active_dev.is_some_and(|d| d.category == crate::hardware::enumerator::DeviceCategory::ThrottleQuadrant);
+            state.axis_mode = if existing.is_some() || quadrant { AxisMode::Lever } else { AxisMode::Simple };
+        }
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut state.axis_mode, AxisMode::Simple, "Axis to sim event");
+            ui.selectable_value(&mut state.axis_mode, AxisMode::Lever, "Calibrated lever (throttle, mixture, flaps)");
+        });
+        ui.add_space(4.0);
+        match state.axis_mode {
+            AxisMode::Simple => {
+                // Keep the draft keyed to this input so switching modes does not reset the choice.
+                if state.lever_draft.as_ref().map(|l| l.input != state.selected_input).unwrap_or(true) {
+                    state.lever_draft = Some(crate::gui::views::lever_editor::LeverDraft {
+                        input: state.selected_input.clone(),
+                        action: existing.clone().unwrap_or(crate::profile::schema::EventActionRangedAxis {
+                            config_id: crate::gui::views::lever_editor::LEVER_KINDS[0].0.to_string(),
+                            options: None,
+                        }),
+                    });
+                }
+                render_axis_telemetry_card(ui, state, profile, profile_path_input, active_dev, live_axes, cmd_tx, theme);
+            }
+            AxisMode::Lever => {
+                let live = live_axes
+                    .get(&state.selected_input)
+                    .or_else(|| active_dev.and_then(|d| live_axes.get(&format!("{}:{}", d.name, state.selected_input))));
+                let input = state.selected_input.clone();
+                if let Some(action) = crate::gui::views::lever_editor::render_lever_card(ui, &mut state.lever_draft, &input, existing, live, theme) {
+                    if let Some(conn_dev) = active_dev {
+                        set_value_definition(profile, conn_dev, &input, vec![EventActionItem::RangedAxis(action)]);
+                        save_profile_now(profile, profile_path_input, cmd_tx);
+                    }
+                }
+            }
+        }
         ui.add_space(6.0);
     }
 
@@ -571,23 +647,28 @@ fn render_axis_telemetry_card(
             .map(|st| (st.normalized, st.raw))
             .unwrap_or((0.0, 0));
 
-        let is_bipolar = !state.selected_input.contains("THROTTLE");
-        let effective_norm = if state.axis_invert { -norm } else { norm };
+        // Normalized values are -1..1 for devices with a signed range, 0..1 otherwise.
+        let is_bipolar = live_val
+            .map(|st| st.min < 0)
+            .unwrap_or(!state.selected_input.contains("THROTTLE"));
+        let effective_norm = match (state.axis_invert, is_bipolar) {
+            (false, _) => norm,
+            (true, true) => -norm,
+            (true, false) => 1.0 - norm,
+        };
 
-        ui.horizontal(|ui| {
-            ui_smooth_axis_bar(ui, effective_norm, is_bipolar, theme);
-            ui.label(
-                RichText::new(format!("{:+.1}%  (raw: {})", effective_norm * 100.0, raw))
-                    .color(theme.text_primary)
-                    .monospace()
-                    .strong(),
-            );
-        });
+        ui_smooth_axis_bar(ui, effective_norm, is_bipolar, theme);
+        ui.label(
+            RichText::new(format!("{:+.1}%   raw {}", effective_norm * 100.0, raw))
+                .color(theme.text_primary)
+                .monospace()
+                .strong(),
+        );
 
         ui.add_space(6.0);
 
         // Calibration options
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut state.axis_invert, RichText::new("Invert Axis").color(theme.text_primary).small());
             ui.add_space(10.0);
             ui.label(RichText::new("Deadzone:").color(theme.text_secondary).small());
@@ -608,7 +689,7 @@ fn render_axis_telemetry_card(
                 if let Some(conn_dev) = active_dev {
                     let preset = &SIMCONNECT_AXIS_PRESETS[state.selected_axis_preset_idx];
                     let event_name = preset.name;
-                    add_axis_action_to_profile(profile, conn_dev, &state.selected_input, event_name);
+                    add_axis_action_to_profile(profile, conn_dev, &state.selected_input, event_name, state.axis_invert);
                     save_profile_now(profile, profile_path_input, cmd_tx);
                 }
             }
@@ -664,7 +745,7 @@ fn render_configured_actions_section(
                                                 action_cards_count += 1;
                                                 ui_elevated_card(ui, theme, |ui| {
                                                     ui.horizontal(|ui| {
-                                                        ui_tag_pill(ui, trigger, theme.accent, theme);
+                                                        ui_tag_pill(ui, &trigger_label(trigger), theme.accent, theme);
 
                                                         match act {
                                                             EventActionItem::Control(c) => {
@@ -678,6 +759,16 @@ fn render_configured_actions_section(
                                                             }
                                                             EventActionItem::CustomAxis(ca) => {
                                                                 ui.label(RichText::new(format!("⚡ Custom Axis: {}", ca.target)).color(theme.text_primary).strong());
+                                                            }
+                                                            EventActionItem::RangedAxis(ra) => {
+                                                                let engines: Vec<String> = (1..=4).filter(|n| ra.option_bool(&format!("OPTION{}", n))).map(|n| n.to_string()).collect();
+                                                                let kind = crate::gui::views::lever_editor::LEVER_KINDS
+                                                                    .iter()
+                                                                    .find(|(id, _)| id.eq_ignore_ascii_case(&ra.config_id))
+                                                                    .map(|(_, l)| *l)
+                                                                    .unwrap_or(&ra.config_id);
+                                                                let eng = if engines.is_empty() { "all engines".to_string() } else { format!("engine {}", engines.join(" + ")) };
+                                                                ui.label(RichText::new(format!("🕹 Lever: {} ({})", kind, eng)).color(theme.text_primary).strong());
                                                             }
                                                             _ => {
                                                                 ui.label(RichText::new("Action").color(theme.text_primary));
@@ -697,9 +788,18 @@ fn render_configured_actions_section(
                                                             if ui.button(RichText::new("⚡ Test in Sim").color(theme.accent).strong().small()).clicked() {
                                                                 match act {
                                                                     EventActionItem::Control(c) => {
-                                                                        let val = c.value.as_deref().and_then(|v| v.parse::<u32>().ok()).unwrap_or(1);
-                                                                        let name = c.target.strip_prefix("SIMCONNECT:").unwrap_or(&c.target).to_string();
-                                                                        to_test = Some(GuiCommand::FireSimConnectEvent { event_name: name, value: val });
+                                                                        let param = c.effective_value().map(str::trim).filter(|v| !v.is_empty());
+                                                                        if let Some((prefix, name)) = crate::profile::executor::pmdg_target(&c.target) {
+                                                                            let parameter = param
+                                                                                .and_then(|v| v.parse::<i64>().ok())
+                                                                                .map(|v| v as u32)
+                                                                                .unwrap_or_else(|| crate::pmdg::default_parameter(trigger));
+                                                                            to_test = Some(GuiCommand::FirePmdgEvent { prefix: prefix.to_string(), name: name.to_string(), parameter });
+                                                                        } else {
+                                                                            let val = param.and_then(|v| v.parse::<i64>().ok()).map(|v| v as u32).unwrap_or(1);
+                                                                            let name = c.target.strip_prefix("SIMCONNECT:").unwrap_or(&c.target).to_string();
+                                                                            to_test = Some(GuiCommand::FireSimConnectEvent { event_name: name, value: val });
+                                                                        }
                                                                     }
                                                                     EventActionItem::ChangeValue(cv) => {
                                                                         let val = cv.value.as_deref().and_then(|v| v.parse::<f64>().ok()).unwrap_or(1.0);
@@ -782,7 +882,7 @@ fn render_inline_add_action_form(
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("➕ Configure New Action").color(theme.accent).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("✕ Close").clicked() {
+                    if ui.small_button("✖ Close").clicked() {
                         state.show_add_action_form = false;
                     }
                 });
@@ -791,22 +891,36 @@ fn render_inline_add_action_form(
             ui.add_space(4.0);
 
             // Trigger selector
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Event Trigger:").color(theme.text_secondary).small());
-                ui.selectable_value(&mut state.selected_trigger, "PRESS".to_string(), "On Press");
-                ui.selectable_value(&mut state.selected_trigger, "RELEASE".to_string(), "On Release");
-                ui.selectable_value(&mut state.selected_trigger, "HELD".to_string(), "While Held");
-                ui.selectable_value(&mut state.selected_trigger, "CW".to_string(), "Clockwise");
-                ui.selectable_value(&mut state.selected_trigger, "CCW".to_string(), "Counter-Clockwise");
+            let is_hat = state.selected_input.to_ascii_uppercase().starts_with("HATSWITCH");
+            if is_hat {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Direction:").color(theme.text_secondary).small());
+                    for dir in ["NORTH", "NORTHEAST", "EAST", "SOUTHEAST", "SOUTH", "SOUTHWEST", "WEST", "NORTHWEST"] {
+                        ui.selectable_value(&mut state.pov_dir, dir.to_string(), title_case(dir));
+                    }
+                });
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Trigger:").color(theme.text_secondary).small());
+                for (kind, label, tip) in TRIGGER_KINDS {
+                    ui.selectable_value(&mut state.trigger_kind, kind.to_string(), label).on_hover_text(tip);
+                }
             });
+            state.selected_trigger = if is_hat {
+                format!("POV_{}_{}", state.pov_dir, state.trigger_kind)
+            } else {
+                state.trigger_kind.clone()
+            };
 
             ui.add_space(4.0);
 
             // Action type choices
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Action Type:").color(theme.text_secondary).small());
-                ui.selectable_value(&mut state.new_action_type, ActionTypeChoice::SimConnectPreset, "SimConnect Preset");
-                ui.selectable_value(&mut state.new_action_type, ActionTypeChoice::SimConnectCustom, "Custom SimEvent");
+                ui.selectable_value(&mut state.new_action_type, ActionTypeChoice::SimConnectCustom, "SimConnect Event");
+                if !crate::pmdg::installed_sdks().is_empty() {
+                    ui.selectable_value(&mut state.new_action_type, ActionTypeChoice::Pmdg, "PMDG Event");
+                }
                 ui.selectable_value(&mut state.new_action_type, ActionTypeChoice::Lvar, "MSFS LVAR");
                 ui.selectable_value(&mut state.new_action_type, ActionTypeChoice::CalculatorCode, "RPN Calculator");
             });
@@ -815,38 +929,8 @@ fn render_inline_add_action_form(
 
             // Specific action parameters
             match state.new_action_type {
-                ActionTypeChoice::SimConnectPreset => {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Preset:").color(theme.text_secondary).small());
-                        let current_preset = &SIMCONNECT_PRESETS[state.selected_preset_idx];
-                        egui::ComboBox::from_id_salt("mapping_preset_combo")
-                            .width(340.0)
-                            .selected_text(format!("[{}] {}", current_preset.category, current_preset.name))
-                            .show_ui(ui, |ui| {
-                                for (idx, p) in SIMCONNECT_PRESETS.iter().enumerate() {
-                                    ui.selectable_value(
-                                        &mut state.selected_preset_idx,
-                                        idx,
-                                        format!("[{}] {} - {}", p.category, p.name, p.description),
-                                    );
-                                }
-                            });
-                    });
-                    ui.label(
-                        RichText::new(SIMCONNECT_PRESETS[state.selected_preset_idx].description)
-                            .italics()
-                            .color(theme.text_secondary)
-                            .small(),
-                    );
-                }
-                ActionTypeChoice::SimConnectCustom => {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Event Name:").color(theme.text_secondary).small());
-                        ui.add(egui::TextEdit::singleline(&mut state.custom_target).hint_text("e.g. AP_MASTER or TOGGLE_MASTER_BATTERY"));
-                        ui.label(RichText::new("Value:").color(theme.text_secondary).small());
-                        ui.add(egui::TextEdit::singleline(&mut state.action_value).desired_width(60.0));
-                    });
-                }
+                ActionTypeChoice::Pmdg => render_pmdg_picker(ui, state, theme),
+                ActionTypeChoice::SimConnectCustom => render_sim_event_picker(ui, state, theme),
                 ActionTypeChoice::Lvar => {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Target LVAR:").color(theme.text_secondary).small());
@@ -966,22 +1050,21 @@ fn save_action_to_profile(
     let defs = spad_event.event_definitions.get_or_insert_with(|| EventDefinitionsList { items: Vec::new() });
 
     let action_item = match state.new_action_type {
-        ActionTypeChoice::SimConnectPreset => {
-            let p = &SIMCONNECT_PRESETS[state.selected_preset_idx];
-            EventActionItem::Control(EventActionControl {
-                target: format!("SIMCONNECT:{}", p.name),
-                value: Some("1".to_string()),
-            })
+        ActionTypeChoice::Pmdg => {
+            let Some((target, param)) = pmdg_selection(state) else { return };
+            EventActionItem::Control(EventActionControl { target, value: Some(param.to_string()), parameters: Vec::new() })
         }
         ActionTypeChoice::SimConnectCustom => {
-            let target = if state.custom_target.starts_with("SIMCONNECT:") {
-                state.custom_target.clone()
+            // Keep explicit providers (SIMCONNECT:, PMDGNG3:, ...) as typed.
+            let target = if crate::profile::evaluator::split_data_prefix(state.custom_target.trim()).is_some() {
+                state.custom_target.trim().to_string()
             } else {
                 format!("SIMCONNECT:{}", state.custom_target.trim())
             };
             EventActionItem::Control(EventActionControl {
                 target,
                 value: Some(state.action_value.clone()),
+                parameters: Vec::new(),
             })
         }
         ActionTypeChoice::Lvar => {
@@ -1016,6 +1099,18 @@ fn save_action_to_profile(
         None
     };
 
+    // Same trigger, no condition: add to the existing definition (one definition per trigger)
+    // instead of stacking IsFinal definitions where only the first would run.
+    defs.items.retain(|d| d.actions.as_ref().is_some_and(|a| !a.items.is_empty()));
+    if conditions.is_none() {
+        if let Some(existing) = defs.items.iter_mut().find(|d| {
+            d.conditions.as_ref().is_none_or(|c| c.items.is_empty())
+                && crate::profile::executor::trigger_matches(d.trigger.as_deref().unwrap_or(""), &state.selected_trigger)
+        }) {
+            existing.actions.get_or_insert_with(|| crate::profile::schema::EventActionsList { items: Vec::new() }).items.push(action_item);
+            return;
+        }
+    }
     defs.items.push(EventDefinition {
         trigger: Some(state.selected_trigger.clone()),
         priority: None,
@@ -1031,16 +1126,31 @@ fn add_axis_action_to_profile(
     conn_dev: &ConnectedDevice,
     bound_to: &str,
     event_name: &str,
+    invert: bool,
+) {
+    let action = EventActionItem::CustomAxis(crate::profile::schema::EventActionCustomAxis {
+        target: format!("SIMCONNECT:{}", event_name),
+        value: None,
+        options: invert.then(|| crate::profile::schema::ProfileOptionsList {
+            items: vec![crate::profile::schema::ProfileOption {
+                key: "INVERTAXIS".to_string(),
+                value: Some("True".to_string()),
+            }],
+        }),
+    });
+    set_value_definition(profile, conn_dev, bound_to, vec![action]);
+}
+
+/// Replaces the axis (`VALUE`) definitions of an input with one holding `actions`, keeping
+/// any button-style definitions (`PRESSSHORT`, ...) bound to the same input.
+fn set_value_definition(
+    profile: &mut Option<SpadProfile>,
+    conn_dev: &ConnectedDevice,
+    bound_to: &str,
+    actions: Vec<EventActionItem>,
 ) {
     let Some(ref mut prof) = profile else { return };
-    let dev_prof = prof.ensure_device_for_connected(
-        conn_dev.vendor_id,
-        conn_dev.product_id,
-        &conn_dev.id,
-        &conn_dev.name,
-        None,
-    );
-
+    let dev_prof = prof.ensure_device_for_connected(conn_dev.vendor_id, conn_dev.product_id, &conn_dev.id, &conn_dev.name, None);
     if dev_prof.pages.is_empty() {
         dev_prof.pages.push(crate::profile::schema::DevicePage {
             id: Some("Default".to_string()),
@@ -1049,34 +1159,92 @@ fn add_axis_action_to_profile(
             events: Some(EventList { items: Vec::new() }),
         });
     }
-
     let events = dev_prof.pages[0].events.get_or_insert_with(|| EventList { items: Vec::new() });
-    let spad_event = if let Some(existing) = events.items.iter_mut().find(|e| crate::profile::schema::bound_to_matches(&e.bound_to, bound_to)) {
-        existing
-    } else {
-        events.items.push(SpadEvent {
-            bound_to: bound_to.to_string(),
-            config_id: None,
-            event_definitions: Some(EventDefinitionsList { items: Vec::new() }),
-        });
-        events.items.last_mut().unwrap()
+    let idx = match events.items.iter().position(|e| crate::profile::schema::bound_to_matches(&e.bound_to, bound_to)) {
+        Some(i) => i,
+        None => {
+            events.items.push(SpadEvent {
+                bound_to: bound_to.to_string(),
+                config_id: None,
+                event_definitions: Some(EventDefinitionsList { items: Vec::new() }),
+            });
+            events.items.len() - 1
+        }
     };
+    let defs = events.items[idx].event_definitions.get_or_insert_with(|| EventDefinitionsList { items: Vec::new() });
+    defs.items.retain(|d| !d.trigger.as_deref().unwrap_or("").eq_ignore_ascii_case("VALUE"));
+    defs.items.insert(
+        0,
+        EventDefinition {
+            trigger: Some("VALUE".to_string()),
+            priority: None,
+            is_final: Some(true),
+            condition_binding: None,
+            conditions: None,
+            actions: Some(crate::profile::schema::EventActionsList { items: actions }),
+        },
+    );
+}
 
-    let defs = spad_event.event_definitions.get_or_insert_with(|| EventDefinitionsList { items: Vec::new() });
-    defs.items.clear();
-    defs.items.push(EventDefinition {
-        trigger: Some("VALUE".to_string()),
-        priority: None,
-        is_final: Some(true),
-        condition_binding: None,
-        conditions: None,
-        actions: Some(crate::profile::schema::EventActionsList {
-            items: vec![EventActionItem::Control(EventActionControl {
-                target: format!("SIMCONNECT:{}", event_name),
-                value: None,
-            })],
-        }),
-    });
+/// Trigger kinds offered in the add-action form: (id, label, tooltip).
+const TRIGGER_KINDS: [(&str, &str, &str); 5] = [
+    ("PRESS", "Press", "Fires as soon as the button goes down"),
+    ("RELEASE", "Release", "Fires when the button is let go"),
+    ("PRESSSHORT", "Short press", "Fires on release if held less than half a second"),
+    ("PRESSLONG", "Long press", "Fires once after holding for half a second"),
+    ("HELD", "Held (repeat)", "Fires on press, then repeats every 100 ms while held — for trim"),
+];
+
+fn title_case(s: &str) -> String {
+    let lower = s.to_ascii_lowercase();
+    let mut c = lower.chars();
+    c.next().map(|f| f.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default()
+}
+
+/// Human label for a trigger id: `PRESSLONG` -> `Long press`, `POV_NORTH_HELD` -> `Hat North · Held (repeat)`.
+pub fn trigger_label(trigger: &str) -> String {
+    let t = trigger.to_ascii_uppercase();
+    if let Some(rest) = t.strip_prefix("POV_") {
+        if let Some((dir, kind)) = rest.split_once('_') {
+            return format!("Hat {} · {}", title_case(dir), trigger_label(kind));
+        }
+    }
+    match t.as_str() {
+        "VALUE" => "Axis value".to_string(),
+        _ => TRIGGER_KINDS
+            .iter()
+            .find(|(id, _, _)| *id == t)
+            .map(|(_, l, _)| l.to_string())
+            .unwrap_or_else(|| title_case(&t.replace('_', " "))),
+    }
+}
+
+/// Human label for an input id: `BUTTON_5` -> `Button 5`, `ABS_RZ` / `RZ_AXIS` -> `Rz axis`.
+pub fn input_label(id: &str) -> String {
+    let u = id.to_ascii_uppercase();
+    if let Some(n) = u.strip_prefix("BUTTON_") {
+        return format!("Button {}", n);
+    }
+    if let Some(n) = u.strip_prefix("HATSWITCH_") {
+        return format!("Hat switch {}", n);
+    }
+    let axis = u.strip_prefix("ABS_").or_else(|| u.strip_suffix("_AXIS")).or_else(|| u.strip_prefix("AXIS_"));
+    match axis {
+        Some("THROTTLE") => "Throttle axis".to_string(),
+        Some("RUDDER") => "Rudder axis".to_string(),
+        Some(a) if a.len() <= 2 => format!("{} axis", title_case(a)),
+        _ => id.to_string(),
+    }
+}
+
+/// True for analog axis names: Linux evdev (`ABS_X`, `ABS_RZ`, ...) and SPAD.neXt (`X_AXIS`, `SLIDER_0`, ...).
+fn is_axis_input_name(name: &str) -> bool {
+    let n = name.to_ascii_uppercase();
+    (n.starts_with("ABS_") && !n.starts_with("ABS_HAT"))
+        || n.contains("AXIS")
+        || n.starts_with("SLIDER")
+        || n.contains("THROTTLE")
+        || n.contains("RUDDER")
 }
 
 fn remove_action_from_device(
@@ -1102,6 +1270,10 @@ fn remove_action_from_device(
                                     }
                                 }
                             }
+                            // Drop definitions left without actions
+                            if defs.items.get(def_idx).is_some_and(|d| d.actions.as_ref().is_none_or(|a| a.items.is_empty())) {
+                                defs.items.remove(def_idx);
+                            }
                         }
                     }
                 }
@@ -1115,13 +1287,12 @@ fn test_new_action_in_sim(
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<GuiCommand>,
 ) {
     match state.new_action_type {
-        ActionTypeChoice::SimConnectPreset => {
-            let p = &SIMCONNECT_PRESETS[state.selected_preset_idx];
-            let name = p.name;
-            let _ = cmd_tx.send(GuiCommand::FireSimConnectEvent {
-                event_name: name.to_string(),
-                value: 1,
-            });
+        ActionTypeChoice::Pmdg => {
+            if let Some((target, param)) = pmdg_selection(state) {
+                if let Some((prefix, name)) = target.split_once(':') {
+                    let _ = cmd_tx.send(GuiCommand::FirePmdgEvent { prefix: prefix.to_string(), name: name.to_string(), parameter: param });
+                }
+            }
         }
         ActionTypeChoice::SimConnectCustom => {
             let name = state.custom_target.strip_prefix("SIMCONNECT:").unwrap_or(&state.custom_target);
@@ -1144,6 +1315,119 @@ fn test_new_action_in_sim(
                 code: state.custom_target.clone(),
             });
         }
+    }
+}
+
+/// Searchable SimConnect event picker; the name field doubles as the search box and still
+/// accepts any event name typed by hand.
+fn render_sim_event_picker(ui: &mut Ui, state: &mut MappingViewState, theme: &AeroTheme) {
+    use crate::gui::sim_events::{categories, SIM_EVENTS};
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Event:").color(theme.text_secondary).small());
+        ui.add(
+            egui::TextEdit::singleline(&mut state.custom_target)
+                .hint_text("🔍 Search or type, e.g. GEAR or AP_MASTER")
+                .desired_width(320.0),
+        );
+        ui.label(RichText::new("Value:").color(theme.text_secondary).small());
+        ui.add(egui::TextEdit::singleline(&mut state.action_value).desired_width(60.0));
+    });
+    ui.horizontal_wrapped(|ui| {
+        if ui.selectable_label(state.sim_event_category.is_none(), "All").clicked() {
+            state.sim_event_category = None;
+        }
+        for cat in categories() {
+            if ui.selectable_label(state.sim_event_category == Some(cat), cat).clicked() {
+                state.sim_event_category = Some(cat);
+            }
+        }
+    });
+    let query = state.custom_target.trim().trim_start_matches("SIMCONNECT:").to_ascii_uppercase();
+    let words: Vec<&str> = query.split(|c: char| c.is_whitespace() || c == '_').filter(|w| !w.is_empty()).collect();
+    let exact = SIM_EVENTS.iter().any(|e| e.name == query);
+    let list: Vec<&crate::gui::sim_events::SimEvent> = SIM_EVENTS
+        .iter()
+        .filter(|e| state.sim_event_category.is_none_or(|c| c == e.category))
+        .filter(|e| exact || words.iter().all(|w| e.name.contains(w)))
+        .collect();
+    egui::Frame::none().fill(theme.bg_base).rounding(6.0).inner_margin(4.0).show(ui, |ui| {
+        ScrollArea::vertical().id_salt("sim_event_list").max_height(200.0).auto_shrink([false, true]).show(ui, |ui| {
+            if list.is_empty() {
+                ui.label(
+                    RichText::new("Not in the catalog: the name you typed will be sent as-is.")
+                        .color(theme.text_muted)
+                        .small()
+                        .italics(),
+                );
+            }
+            for e in list {
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(e.name == query, RichText::new(e.name).monospace().small()).clicked() {
+                        state.custom_target = e.name.to_string();
+                    }
+                    ui.label(RichText::new(e.category).color(theme.text_muted).small());
+                });
+            }
+        });
+    });
+}
+
+/// Selected PMDG target (`PMDGNG3:EVT_...`) and parameter, if an event is picked.
+fn pmdg_selection(state: &MappingViewState) -> Option<(String, u32)> {
+    let sdk = crate::pmdg::installed_sdks().get(state.pmdg_family_idx)?;
+    if state.pmdg_event.is_empty() {
+        return None;
+    }
+    let param = PMDG_PARAMS.get(state.pmdg_param_idx).map(|p| p.1).unwrap_or(crate::pmdg::MOUSE_FLAG_LEFTSINGLE);
+    Some((format!("{}:{}", sdk.family.profile_prefixes()[0], state.pmdg_event), param))
+}
+
+/// Searchable list of the events in the installed PMDG SDK header.
+fn render_pmdg_picker(ui: &mut Ui, state: &mut MappingViewState, theme: &AeroTheme) {
+    let sdks = crate::pmdg::installed_sdks();
+    if state.pmdg_family_idx >= sdks.len() {
+        state.pmdg_family_idx = 0;
+    }
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Aircraft:").color(theme.text_secondary).small());
+        for (i, sdk) in sdks.iter().enumerate() {
+            if ui.selectable_value(&mut state.pmdg_family_idx, i, sdk.family.label()).changed() {
+                state.pmdg_event.clear();
+            }
+        }
+    });
+    let Some(sdk) = sdks.get(state.pmdg_family_idx) else { return };
+    ui.add(
+        egui::TextEdit::singleline(&mut state.pmdg_query)
+            .hint_text("🔍 Search events, e.g. MCP HEADING or BATTERY")
+            .desired_width(f32::INFINITY),
+    );
+    let words: Vec<String> = state.pmdg_query.split_whitespace().map(|w| w.to_ascii_uppercase()).collect();
+    let mut names: Vec<&String> = sdk
+        .events
+        .keys()
+        .filter(|n| words.iter().all(|w| n.contains(w.as_str())))
+        .collect();
+    names.sort();
+    ui.label(RichText::new(format!("{} events", names.len())).color(theme.text_muted).small());
+    egui::Frame::none().fill(theme.bg_base).rounding(6.0).inner_margin(4.0).show(ui, |ui| {
+        ScrollArea::vertical().id_salt("pmdg_events").max_height(170.0).auto_shrink([false, true]).show_rows(ui, 20.0, names.len(), |ui, range| {
+            for name in &names[range] {
+                let selected = state.pmdg_event == **name;
+                if ui.selectable_label(selected, RichText::new(name.as_str()).monospace().small()).clicked() {
+                    state.pmdg_event = (*name).clone();
+                }
+            }
+        });
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Parameter:").color(theme.text_secondary).small());
+        for (i, (label, _)) in PMDG_PARAMS.iter().enumerate() {
+            ui.selectable_value(&mut state.pmdg_param_idx, i, *label);
+        }
+    });
+    if !state.pmdg_event.is_empty() {
+        ui.label(RichText::new(format!("Selected: {}", state.pmdg_event)).color(theme.accent).small().strong());
     }
 }
 

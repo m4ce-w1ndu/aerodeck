@@ -299,6 +299,7 @@ fn test_per_device_layout_replacement_and_undo() {
                                 items: vec![EventActionItem::Control(EventActionControl {
                                     target: "SIMCONNECT:AXIS_THROTTLE_SET".to_string(),
                                     value: None,
+                                    parameters: Vec::new(),
                                 })],
                             }),
                         }],
@@ -333,7 +334,7 @@ fn test_per_device_layout_replacement_and_undo() {
 }
 
 #[test]
-fn test_legacy_profile_migration_and_backup() {
+fn test_legacy_profile_migration_is_in_memory() {
     let dir = std::env::temp_dir().join("aerodeck_migr_test");
     let _ = std::fs::create_dir_all(&dir);
     let old_xml_path = dir.join("legacy_cessna.xml");
@@ -351,8 +352,9 @@ fn test_legacy_profile_migration_and_backup() {
     assert_eq!(dev.pages.len(), 1);
     assert_eq!(dev.pages[0].name.as_deref(), Some("Default"));
 
-    // Verify .bak file was created
-    assert!(bak_path.exists(), "Backup .bak file should be created during migration");
+    // Reading upgrades in memory only: nothing is written next to the file
+    assert!(!bak_path.exists(), "parsing must not create a .bak file");
+    assert_eq!(std::fs::read_to_string(&old_xml_path).unwrap(), legacy_xml, "parsing must not modify the file");
 
     let _ = std::fs::remove_file(&old_xml_path);
     let _ = std::fs::remove_file(&bak_path);
@@ -360,3 +362,16 @@ fn test_legacy_profile_migration_and_backup() {
 
 
 
+
+#[test]
+fn every_bundled_profile_parses() {
+    let mut failures = Vec::new();
+    let mut paths: Vec<_> = std::fs::read_dir("tests/fixtures/profiles").unwrap().flatten().map(|e| e.path()).collect();
+    paths.push("default_c172.xml".into());
+    for p in paths.into_iter().filter(|p| p.extension().is_some_and(|e| e == "xml")) {
+        if let Err(e) = aerodeck::profile::ProfileParser::parse_file(&p) {
+            failures.push(format!("{}: {:#}", p.display(), e));
+        }
+    }
+    assert!(failures.is_empty(), "profiles failing to parse:\n{}", failures.join("\n"));
+}

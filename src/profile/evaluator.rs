@@ -6,11 +6,25 @@ use super::schema::*;
 pub struct ConditionEvaluator<'a> {
     pub lvars: &'a HashMap<String, f64>,
     pub local_vars: &'a HashMap<String, String>,
+    /// SimVar values keyed by canonical name (see `simconnect::simvars::SimVarRef`).
+    pub simvars: Option<&'a HashMap<String, f64>>,
+    /// PMDG SDK values keyed as in `SimConnectClient::pmdg_snapshot`.
+    pub pmdg: Option<&'a HashMap<String, String>>,
 }
 
 impl<'a> ConditionEvaluator<'a> {
     pub fn new(lvars: &'a HashMap<String, f64>, local_vars: &'a HashMap<String, String>) -> Self {
-        Self { lvars, local_vars }
+        Self { lvars, local_vars, simvars: None, pmdg: None }
+    }
+
+    pub fn with_pmdg(mut self, pmdg: &'a HashMap<String, String>) -> Self {
+        self.pmdg = Some(pmdg);
+        self
+    }
+
+    pub fn with_simvars(mut self, simvars: &'a HashMap<String, f64>) -> Self {
+        self.simvars = Some(simvars);
+        self
     }
 
     pub fn evaluate_definition(&self, def: &EventDefinition) -> bool {
@@ -39,14 +53,27 @@ impl<'a> ConditionEvaluator<'a> {
 
     pub fn resolve_value(&self, target: &str) -> Option<String> {
         let t = target.trim();
-        if let Some(lvar_name) = t.strip_prefix("LVAR:") {
-            let clean = lvar_name.trim_start_matches("L:").trim();
-            self.lvars.get(clean).map(|v| v.to_string())
-        } else if let Some(local_name) = t.strip_prefix("LOCAL:") {
-            self.local_vars.get(local_name).cloned()
-        } else {
-            // Direct literal or fallback
-            Some(t.to_string())
+        let Some((prefix, name)) = split_data_prefix(t) else {
+            // Direct literal
+            return Some(t.to_string());
+        };
+        match prefix.to_ascii_uppercase().as_str() {
+            "LVAR" => {
+                let clean = name.trim_start_matches("L:").trim();
+                self.lvars.get(clean).map(|v| v.to_string())
+            }
+            "LOCAL" => self.local_vars.get(name).cloned(),
+            "SIMCONNECT" | "MSFS" => {
+                let key = crate::simconnect::simvars::SimVarRef::parse(name)?.key;
+                self.simvars?.get(&key).map(|v| v.to_string())
+            }
+            other => {
+                if let Some(key) = crate::pmdg::snapshot_key(other, name) {
+                    return self.pmdg?.get(&key).cloned();
+                }
+                debug!("Data source '{}' is not supported yet", t);
+                None
+            }
         }
     }
 
@@ -121,4 +148,14 @@ impl<'a> ConditionEvaluator<'a> {
             t.parse::<u64>().ok()
         }
     }
+}
+
+/// Splits `PREFIX:rest` when `PREFIX` looks like a SPAD.neXt data provider
+/// (`LVAR`, `LOCAL`, `SIMCONNECT`, `PMDGNG3`, ...). Returns `None` for plain literals.
+pub fn split_data_prefix(t: &str) -> Option<(&str, &str)> {
+    let (prefix, rest) = t.split_once(':')?;
+    let is_provider = prefix.len() >= 2
+        && prefix.chars().all(|c| c.is_ascii_alphanumeric())
+        && prefix.chars().next().is_some_and(|c| c.is_ascii_alphabetic());
+    is_provider.then_some((prefix, rest))
 }

@@ -2,6 +2,7 @@ pub mod schema;
 pub mod parser;
 pub mod evaluator;
 pub mod executor;
+pub mod lever;
 pub mod aircraft;
 pub mod repository;
 

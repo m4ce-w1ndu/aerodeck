@@ -51,6 +51,15 @@ impl ConnectedDevice {
     }
 }
 
+/// Raw hardware input forwarded to the profile executor (independent of GUI display events).
+#[derive(Debug, Clone)]
+pub enum HardwareInput {
+    /// A press or release. `trigger_prefix` is empty for buttons and e.g. `POV_NORTH_` for a
+    /// hat direction, so the executor derives `PRESS` / `POV_NORTH_PRESS`, `..._HELD`, etc.
+    Button { device_id: String, bound_to: String, trigger_prefix: String, pressed: bool },
+    Axis { device_id: String, bound_to: String, raw: i32, min: i32, max: i32 },
+}
+
 pub struct DeviceEnumerator;
 
 impl DeviceEnumerator {
@@ -109,14 +118,11 @@ impl DeviceEnumerator {
             let mut is_controller = false;
 
             if let Some(keys) = has_keys {
-                for key in keys.iter() {
-                    let code = key.code();
-                    // BTN_JOYSTICK (0x120..0x12f), BTN_GAMEPAD (0x130..0x13f), BTN_TRIGGER_HAPPY (0x2c0..0x2ff)
-                    if (0x120..=0x13f).contains(&code) || (0x2c0..=0x2ff).contains(&code) {
-                        is_controller = true;
-                        buttons.push(format_key_name(key));
-                    }
-                }
+                let names = joystick_button_names(keys.iter().map(|k| k.code()));
+                is_controller |= !names.is_empty();
+                let mut ordered: Vec<_> = names.into_iter().collect();
+                ordered.sort_unstable();
+                buttons.extend(ordered.into_iter().map(|(_, name)| name));
             }
 
             let mut hat_indices = Vec::new();
@@ -157,10 +163,7 @@ impl DeviceEnumerator {
             // Append discrete POV hat directions to buttons list
             hat_indices.sort_unstable();
             for h in &hat_indices {
-                buttons.push(format!("HAT{}_UP", h));
-                buttons.push(format!("HAT{}_RIGHT", h));
-                buttons.push(format!("HAT{}_DOWN", h));
-                buttons.push(format!("HAT{}_LEFT", h));
+                buttons.push(format!("HATSWITCH_{}", h));
             }
 
             if !is_controller {
@@ -320,14 +323,28 @@ impl DeviceEnumerator {
     pub fn start_hardware_listeners(
         devices: &[ConnectedDevice],
         event_tx: mpsc::UnboundedSender<GuiEvent>,
+        input_tx: Option<mpsc::UnboundedSender<HardwareInput>>,
         shutdown: Arc<AtomicBool>,
     ) {
         for dev in devices {
             if let Some(ref path) = dev.path {
                 let path_clone = path.clone();
                 let dev_name = dev.name.clone();
-                let _dev_id = dev.id.clone();
+                let dev_id = dev.id.clone();
                 let etx = event_tx.clone();
+                let itx = input_tx.clone();
+                let send_button = move |bound_to: &str, prefix: &str, pressed: bool| {
+                    if let Some(ref itx) = itx {
+                        let _ = itx.send(HardwareInput::Button {
+                            device_id: dev_id.clone(),
+                            bound_to: bound_to.to_string(),
+                            trigger_prefix: prefix.to_string(),
+                            pressed,
+                        });
+                    }
+                };
+                let itx_axis = input_tx.clone();
+                let dev_id_axis = dev.id.clone();
                 let stop = shutdown.clone();
 
                 std::thread::spawn(move || {
@@ -346,84 +363,67 @@ impl DeviceEnumerator {
                         }
                     }
 
-                    let mut hat_state: HashMap<(u32, bool), i32> = HashMap::new();
+                    // SPAD.neXt / DirectInput numbering: BUTTON_1.. in HID order.
+                    let button_names = ev_device
+                        .supported_keys()
+                        .map(|k| joystick_button_names(k.iter().map(|c| c.code())))
+                        .unwrap_or_default();
+                    // Per hat: (x, y) in -1..=1
+                    let mut hat_state: HashMap<u32, (i32, i32)> = HashMap::new();
 
                     info!("Started real-time event listener on hardware controller '{}' ({:?})", dev_name, path_clone);
 
                     while !stop.load(Ordering::Relaxed) {
                         match ev_device.fetch_events() {
                             Ok(events) => {
+                                // A rescan replaces this listener; drop events read after the stop request
+                                // so the old and new listener never both dispatch the same input.
+                                if stop.load(Ordering::Relaxed) {
+                                    break;
+                                }
                                 for ev in events {
                                     match ev.destructure() {
                                         evdev::EventSummary::Key(_, key_code, val) => {
-                                            let bound_to = format_key_name(key_code);
-                                            let action = match val {
-                                                1 => "PRESS",
-                                                0 => "RELEASE",
-                                                2 => "REPEAT",
-                                                _ => "CHANGE",
-                                            };
-
+                                            if val == 2 {
+                                                continue; // kernel auto-repeat; HELD is timed by the executor
+                                            }
+                                            let bound_to = button_names
+                                                .get(&key_code.code())
+                                                .cloned()
+                                                .unwrap_or_else(|| format_key_name(key_code));
+                                            let pressed = val == 1;
+                                            let action = if pressed { "PRESS" } else { "RELEASE" };
                                             trace!("[{}] Key event: {} -> {}", dev_name, bound_to, action);
-
-                                            let _ = etx.send(GuiEvent::InputTriggered {
-                                                device: dev_name.clone(),
-                                                bound_to: bound_to.clone(),
-                                                action: action.to_string(),
-                                                time: Instant::now(),
-                                            });
-
-                                            let _ = etx.send(GuiEvent::Log {
-                                                timestamp: chrono_now_str(),
-                                                level: "INPUT".to_string(),
-                                                text: format!("[{}] Hardware Event: {} -> {}", dev_name, bound_to, action),
-                                            });
+                                            send_button(&bound_to, "", pressed);
+                                            send_input_to_gui(&etx, &dev_name, &bound_to, action);
                                         }
                                         evdev::EventSummary::AbsoluteAxis(_, axis_code, val) => {
-                                            // Handle POV / Hat Switches (discrete 4-way/8-way directional buttons)
                                             let axis_name = format_axis_name(axis_code);
-                                            if axis_name.starts_with("ABS_HAT") {
-                                                let is_y = axis_name.ends_with('Y');
-                                                let is_x = axis_name.ends_with('X');
-                                                let hat_idx = axis_name.strip_prefix("ABS_HAT")
-                                                    .and_then(|s| s.chars().next())
-                                                    .and_then(|c| c.to_digit(10))
-                                                    .unwrap_or(0);
-
-                                                if is_y {
-                                                    let up_name = format!("HAT{}_UP", hat_idx);
-                                                    let down_name = format!("HAT{}_DOWN", hat_idx);
-                                                    let prev_y = hat_state.get(&(hat_idx, true)).copied().unwrap_or(0);
-                                                    hat_state.insert((hat_idx, true), val);
-
-                                                    if val == -1 {
-                                                        send_hat_event(&etx, &dev_name, &up_name, "PRESS");
-                                                    } else if val == 1 {
-                                                        send_hat_event(&etx, &dev_name, &down_name, "PRESS");
-                                                    } else if val == 0 {
-                                                        if prev_y == -1 {
-                                                            send_hat_event(&etx, &dev_name, &up_name, "RELEASE");
-                                                        } else if prev_y == 1 {
-                                                            send_hat_event(&etx, &dev_name, &down_name, "RELEASE");
-                                                        }
+                                            if let Some(rest) = axis_name.strip_prefix("ABS_HAT") {
+                                                // POV hat: two axes combined into 8 directions
+                                                let hat_idx = rest.chars().next().and_then(|c| c.to_digit(10)).unwrap_or(0);
+                                                let entry = hat_state.entry(hat_idx).or_insert((0, 0));
+                                                let before = pov_direction(entry.0, entry.1);
+                                                if rest.ends_with('X') {
+                                                    entry.0 = val.signum();
+                                                } else {
+                                                    entry.1 = val.signum();
+                                                }
+                                                let after = pov_direction(entry.0, entry.1);
+                                                if before == after {
+                                                    continue;
+                                                }
+                                                let hat = format!("HATSWITCH_{}", hat_idx);
+                                                for (dir, pressed) in [(before, false), (after, true)] {
+                                                    let Some(dir) = dir else { continue };
+                                                    let prefix = format!("POV_{}_", dir);
+                                                    send_button(&hat, &prefix, pressed);
+                                                    // Legacy names used by the built-in profiles
+                                                    if let Some(legacy) = legacy_hat_name(hat_idx, dir) {
+                                                        send_button(&legacy, "", pressed);
                                                     }
-                                                } else if is_x {
-                                                    let right_name = format!("HAT{}_RIGHT", hat_idx);
-                                                    let left_name = format!("HAT{}_LEFT", hat_idx);
-                                                    let prev_x = hat_state.get(&(hat_idx, false)).copied().unwrap_or(0);
-                                                    hat_state.insert((hat_idx, false), val);
-
-                                                    if val == 1 {
-                                                        send_hat_event(&etx, &dev_name, &right_name, "PRESS");
-                                                    } else if val == -1 {
-                                                        send_hat_event(&etx, &dev_name, &left_name, "PRESS");
-                                                    } else if val == 0 {
-                                                        if prev_x == 1 {
-                                                            send_hat_event(&etx, &dev_name, &right_name, "RELEASE");
-                                                        } else if prev_x == -1 {
-                                                            send_hat_event(&etx, &dev_name, &left_name, "RELEASE");
-                                                        }
-                                                    }
+                                                    let action = format!("{}{}", prefix, if pressed { "PRESS" } else { "RELEASE" });
+                                                    send_input_to_gui(&etx, &dev_name, &hat, &action);
                                                 }
                                             } else {
                                                 // Analog flight axis (ABS_X, ABS_Y, ABS_Z, ABS_RX, ABS_RY, ABS_RZ, ABS_THROTTLE, etc.)
@@ -443,6 +443,16 @@ impl DeviceEnumerator {
                                                             0.0
                                                         }
                                                     };
+
+                                                    if let Some(ref itx) = itx_axis {
+                                                        let _ = itx.send(HardwareInput::Axis {
+                                                            device_id: dev_id_axis.clone(),
+                                                            bound_to: axis_name.clone(),
+                                                            raw: val,
+                                                            min,
+                                                            max,
+                                                        });
+                                                    }
 
                                                     let _ = etx.send(GuiEvent::AxisMoved {
                                                         device: dev_name.clone(),
@@ -481,7 +491,7 @@ impl DeviceEnumerator {
     }
 }
 
-fn send_hat_event(etx: &mpsc::UnboundedSender<GuiEvent>, dev_name: &str, bound_to: &str, action: &str) {
+fn send_input_to_gui(etx: &mpsc::UnboundedSender<GuiEvent>, dev_name: &str, bound_to: &str, action: &str) {
     let _ = etx.send(GuiEvent::InputTriggered {
         device: dev_name.to_string(),
         bound_to: bound_to.to_string(),
@@ -493,6 +503,44 @@ fn send_hat_event(etx: &mpsc::UnboundedSender<GuiEvent>, dev_name: &str, bound_t
         level: "INPUT".to_string(),
         text: format!("[{}] Hardware Event: {} -> {}", dev_name, bound_to, action),
     });
+}
+
+/// Names joystick buttons the way SPAD.neXt (DirectInput) does: `BUTTON_1`, `BUTTON_2`, ...
+/// The kernel assigns key codes in HID usage order (BTN_TRIGGER.., then BTN_TRIGGER_HAPPY..
+/// past 16 buttons), so the n-th lowest code is DirectInput button n.
+pub fn joystick_button_names(codes: impl Iterator<Item = u16>) -> HashMap<u16, String> {
+    let mut codes: Vec<u16> = codes
+        .filter(|c| (0x120..=0x13f).contains(c) || (0x2c0..=0x2ff).contains(c))
+        .collect();
+    codes.sort_unstable();
+    codes.dedup();
+    codes.into_iter().enumerate().map(|(i, c)| (c, format!("BUTTON_{}", i + 1))).collect()
+}
+
+/// SPAD.neXt POV direction for a hat position (x: -1 left / +1 right, y: -1 up / +1 down).
+pub fn pov_direction(x: i32, y: i32) -> Option<&'static str> {
+    Some(match (x.signum(), y.signum()) {
+        (0, -1) => "NORTH",
+        (1, -1) => "NORTHEAST",
+        (1, 0) => "EAST",
+        (1, 1) => "SOUTHEAST",
+        (0, 1) => "SOUTH",
+        (-1, 1) => "SOUTHWEST",
+        (-1, 0) => "WEST",
+        (-1, -1) => "NORTHWEST",
+        _ => return None,
+    })
+}
+
+fn legacy_hat_name(hat: u32, dir: &str) -> Option<String> {
+    let d = match dir {
+        "NORTH" => "UP",
+        "EAST" => "RIGHT",
+        "SOUTH" => "DOWN",
+        "WEST" => "LEFT",
+        _ => return None,
+    };
+    Some(format!("HAT{}_{}", hat, d))
 }
 
 fn format_key_name(key: evdev::KeyCode) -> String {

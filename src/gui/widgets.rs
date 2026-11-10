@@ -92,7 +92,7 @@ pub fn ui_clickable_row_card<R>(
 /// Renders a pill-shaped status badge with high-contrast text (>4.5:1 WCAG AA)
 pub fn ui_status_badge(ui: &mut Ui, label: &str, active: bool, theme: &AeroTheme) {
     let (border, icon_color, text_color, icon) = if active {
-        (theme.success, theme.success, theme.text_primary, "●")
+        (theme.success, theme.success, theme.text_primary, "⏺")
     } else {
         (theme.border_subtle, theme.text_muted, theme.text_secondary, "○")
     };

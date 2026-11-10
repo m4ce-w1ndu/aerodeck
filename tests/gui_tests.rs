@@ -109,23 +109,18 @@ fn test_aircraft_discovery_binding_and_repository_profiles() {
         AircraftAssignmentManager, AircraftScanner, ProfileParser, ProfileRepository,
     };
 
-    // 1. Verify Built-in Categorized Repository profiles install and parse cleanly
-    ProfileRepository::ensure_builtin_profiles_on_disk();
+    // 1. Built-in repository profiles parse cleanly (in memory: tests must never write
+    //    into the user's ./profiles directory)
     let catalog = ProfileRepository::builtin_catalog();
     assert!(
         catalog.len() >= 7,
         "Repository catalog must contain categorized profiles for Winwing, Thrustmaster TCA, and Saitek"
     );
-
     for entry in &catalog {
-        let installed_path = ProfileRepository::install_repository_profile(entry)
-            .expect("Repository profile should install cleanly");
-        assert!(installed_path.exists());
-        let parsed = ProfileParser::parse_file(&installed_path)
+        let parsed = ProfileParser::parse_str(&entry.xml_content)
             .unwrap_or_else(|e| panic!("Profile {} failed to parse: {}", entry.filename, e));
-        assert!(parsed.devices.is_some(), "Profile {} must have devices", entry.filename);
         assert!(
-            !parsed.devices.as_ref().unwrap().items.is_empty(),
+            parsed.devices.as_ref().is_some_and(|d| !d.items.is_empty()),
             "Profile {} must have device bindings",
             entry.filename
         );
@@ -147,14 +142,10 @@ fn test_aircraft_discovery_binding_and_repository_profiles() {
     assert!(has_a320, "Must discover Airbus A320neo");
     assert!(has_c172, "Must discover Cessna 172 Skyhawk");
 
-    // 3. Verify Aircraft-to-Profile Binding & Automatic Profile Switching Resolution
-    let mut mgr = AircraftAssignmentManager::load_or_default();
-    mgr.import_from_xml_profiles();
-    mgr.assign_aircraft(
-        "Airbus A320 Neo Asobo",
-        "profiles/airbus_a320_winwing_tca.xml",
-    )
-    .expect("Should bind Airbus A320 Neo Asobo");
+    // 3. Aircraft-to-profile resolution, in memory only (no save to aircraft_assignments.json)
+    let mut mgr = AircraftAssignmentManager::default();
+    let fixture = "tests/fixtures/profiles/FBW A32NX.xml";
+    mgr.assignments.insert("Airbus A320 Neo Asobo".to_string(), fixture.to_string());
 
     // Verify SimConnect SystemState("AircraftLoaded") path normalization -> Canonical Title -> Bound Profile
     let simconnect_path = r"SimObjects\AirPlanes\Asobo_A320_NEO\aircraft.cfg";
@@ -172,8 +163,8 @@ fn test_aircraft_discovery_binding_and_repository_profiles() {
     assert!(
         resolved
             .to_string_lossy()
-            .ends_with("airbus_a320_winwing_tca.xml"),
-        "Expected airbus_a320_winwing_tca.xml, got {:?}",
+            .ends_with("FBW A32NX.xml"),
+        "Expected the bound fixture profile, got {:?}",
         resolved
     );
 }

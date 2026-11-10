@@ -326,9 +326,24 @@ pub struct WindowsSpadProfileEntry {
     pub already_imported: bool,
 }
 
+/// Where downloaded SPAD.neXt snippets are kept (outside `./profiles`, not listed as profiles).
+pub const SPAD_CACHE_DIR: &str = "spad_cache";
+
 pub struct ProfileRepository;
 
 impl ProfileRepository {
+    /// Copies a cached SPAD download into `./profiles/` when the user explicitly wants it as a
+    /// standalone profile; returns the path inside `./profiles/`.
+    pub fn promote_to_local_profile(cached: &Path) -> Result<PathBuf> {
+        let name = cached.file_name().ok_or_else(|| anyhow::anyhow!("invalid path {:?}", cached))?;
+        fs::create_dir_all("profiles")?;
+        let dest = Path::new("profiles").join(name);
+        if cached != dest {
+            fs::copy(cached, &dest)?;
+        }
+        Ok(dest)
+    }
+
     /// Installs a repository profile entry into `./profiles/<filename>` and returns its PathBuf
     pub fn install_repository_profile(entry: &RepositoryProfileEntry) -> Result<PathBuf> {
         let profiles_dir = Path::new("profiles");
@@ -527,7 +542,9 @@ impl ProfileRepository {
             anyhow::bail!("Downloaded snippet #{} did not contain valid SPAD.neXt <Profile> XML", snippet_id);
         }
 
-        let profiles_dir = Path::new("profiles");
+        // Downloads go to a cache, never into ./profiles: a SPAD snippet is a source of
+        // mappings to merge into a local profile, not a profile of its own.
+        let profiles_dir = Path::new(SPAD_CACHE_DIR);
         if !profiles_dir.exists() {
             fs::create_dir_all(profiles_dir)?;
         }

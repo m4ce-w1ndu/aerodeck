@@ -45,6 +45,10 @@ pub struct AircraftProfilesViewState {
     pub is_renaming: bool,
     pub rename_profile_input: String,
     pub new_aircraft_pattern: String,
+    /// Multi-select aircraft picker
+    pub aircraft_picker_open: bool,
+    pub aircraft_picker_query: String,
+    pub aircraft_picker_selected: std::collections::BTreeSet<String>,
     pub is_duplicating: bool,
 
     // Snippet import & confirmation
@@ -52,6 +56,8 @@ pub struct AircraftProfilesViewState {
     pub snippet_search: String,
     pub confirm_overwrite: Option<SnippetOverwriteConfirm>,
     pub undo_last_import: Option<SnippetUndoData>,
+    /// Profile (path, content) before the last snippet merge, for "Undo import"
+    pub undo_snippet_merge: Option<(String, SpadProfile)>,
 
     // SPAD.neXt Account & Automatic X-Token config
     pub spad_account: SpadAccountConfig,
@@ -80,11 +86,15 @@ impl Default for AircraftProfilesViewState {
             is_renaming: false,
             rename_profile_input: String::new(),
             new_aircraft_pattern: String::new(),
+            aircraft_picker_open: false,
+            aircraft_picker_query: String::new(),
+            aircraft_picker_selected: Default::default(),
             is_duplicating: false,
             snippet_browser_open: false,
             snippet_search: String::new(),
             confirm_overwrite: None,
             undo_last_import: None,
+            undo_snippet_merge: None,
             spad_account,
             is_fetching_online: false,
             online_catalog: Vec::new(),
@@ -237,7 +247,7 @@ pub fn render_aircraft_profiles_view(
                 ui.label(RichText::new(if is_err { "⚠" } else { "✔" }).color(border).strong());
                 ui.label(RichText::new(msg).color(theme.text_primary));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("✕").clicked() {
+                    if ui.small_button("✖").clicked() {
                         dismiss_status = true;
                     }
                 });
@@ -315,7 +325,7 @@ fn render_profiles_list_panel(
                 .hint_text("🔍 Search profiles or aircraft...")
                 .desired_width(ui.available_width() - 28.0),
         );
-        if !state.profile_search.is_empty() && ui.small_button("✕").clicked() {
+        if !state.profile_search.is_empty() && ui.small_button("✖").clicked() {
             state.profile_search.clear();
         }
     });
@@ -493,7 +503,7 @@ fn render_profile_details_panel(
     // 1. HEADER CARD: Profile Name & Core Actions
     ui_card(ui, theme, |ui| {
         // Row 1: Profile Name Heading & Activation Status
-        ui.horizontal_top(|ui| {
+        ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 if state.is_renaming {
                     ui.horizontal(|ui| {
@@ -652,7 +662,7 @@ fn render_profile_details_panel(
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new(format!("✈ {}", pat)).color(theme.text_primary).small());
-                                if ui.small_button("✕").on_hover_text("Remove this aircraft pattern").clicked() {
+                                if ui.small_button("✖").on_hover_text("Remove this aircraft pattern").clicked() {
                                     remove_pat = Some(pat.clone());
                                 }
                             });
@@ -691,25 +701,79 @@ fn render_profile_details_panel(
             ui.separator();
             ui.add_space(8.0);
 
-            // Quick picker from detected sim aircraft
-            egui::ComboBox::from_id_salt("quick_add_aircraft_combo")
-                .selected_text(RichText::new("➕ Pick from Detected Sim Aircraft...").color(theme.text_secondary).small())
-                .width(260.0)
-                .show_ui(ui, |ui| {
+            if ui
+                .toggle_value(&mut state.aircraft_picker_open, RichText::new("✈ Pick installed aircraft...").color(theme.accent))
+                .changed()
+            {
+                state.aircraft_picker_selected.clear();
+            }
+        });
+
+        // Multi-select picker: tick several aircraft, add them all at once
+        if state.aircraft_picker_open {
+            ui.add_space(6.0);
+            let existing = profile.aircraft_patterns();
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.aircraft_picker_query)
+                        .hint_text("🔍 Filter, e.g. PMDG 777")
+                        .desired_width(260.0),
+                );
+                let q = state.aircraft_picker_query.to_lowercase();
+                let visible: Vec<&str> = aircrafts
+                    .iter()
+                    .map(|a| a.title.as_str())
+                    .filter(|t| q.is_empty() || t.to_lowercase().contains(&q))
+                    .filter(|t| !existing.iter().any(|e| e.eq_ignore_ascii_case(t)))
+                    .collect();
+                if ui.small_button(format!("Select all {}", visible.len())).clicked() {
+                    state.aircraft_picker_selected.extend(visible.iter().map(|t| t.to_string()));
+                }
+                if ui.small_button("Clear").clicked() {
+                    state.aircraft_picker_selected.clear();
+                }
+            });
+            let q = state.aircraft_picker_query.to_lowercase();
+            egui::Frame::none().fill(theme.bg_base).rounding(6.0).inner_margin(6.0).show(ui, |ui| {
+                ScrollArea::vertical().id_salt("aircraft_picker").max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
                     if aircrafts.is_empty() {
                         ui.label(RichText::new("No installed aircraft detected in MSFS folder yet.").color(theme.text_muted).italics());
-                    } else {
-                        for ac in aircrafts {
-                            let label = format!("{} ({})", ac.title, ac.model);
-                            if ui.selectable_label(false, label).clicked() {
-                                profile.add_aircraft_pattern(&ac.title);
-                                let _ = ProfileParser::save_file(p_path, &profile);
-                                state.status_banner = Some((format!("Added aircraft pattern '{}'", ac.title), false));
+                    }
+                    for ac in aircrafts.iter().filter(|a| q.is_empty() || a.title.to_lowercase().contains(&q)) {
+                        let already = existing.iter().any(|e| e.eq_ignore_ascii_case(&ac.title));
+                        let mut checked = already || state.aircraft_picker_selected.contains(&ac.title);
+                        let label = RichText::new(format!("{}  ·  {}", ac.title, ac.model))
+                            .color(if already { theme.text_muted } else { theme.text_primary });
+                        let resp = ui.add_enabled(!already, egui::Checkbox::new(&mut checked, label));
+                        if resp.changed() {
+                            if checked {
+                                state.aircraft_picker_selected.insert(ac.title.clone());
+                            } else {
+                                state.aircraft_picker_selected.remove(&ac.title);
                             }
                         }
                     }
                 });
-        });
+            });
+            let n = state.aircraft_picker_selected.len();
+            if ui
+                .add_enabled(n > 0, egui::Button::new(RichText::new(format!("✔ Add {} aircraft to this profile", n)).color(theme.success).strong()))
+                .clicked()
+            {
+                let titles: Vec<String> = state.aircraft_picker_selected.iter().cloned().collect();
+                for t in &titles {
+                    profile.add_aircraft_pattern(t);
+                }
+                let _ = ProfileParser::save_file(p_path, &profile);
+                let _ = cmd_tx.send(GuiCommand::BindAircraftsToProfile {
+                    aircraft_titles: titles,
+                    profile_path: sel_path.clone(),
+                });
+                state.status_banner = Some((format!("Added {} aircraft to '{}'", n, prof_name), false));
+                state.aircraft_picker_selected.clear();
+                state.aircraft_picker_open = false;
+            }
+        }
     });
 
     ui.add_space(6.0);
@@ -747,7 +811,7 @@ fn render_profile_details_panel(
                 let chip_builder = |ui: &mut Ui| {
                     ui.horizontal(|ui| {
                         let dot_color = if mapped > 0 { theme.success } else { theme.text_muted };
-                        ui.label(RichText::new("●").color(dot_color).small());
+                        ui.label(RichText::new("⏺").color(dot_color).small());
                         ui.label(
                             RichText::new(format!("{} ({} mapped)", dev_name, mapped))
                                 .color(if is_selected_dev { theme.accent } else { theme.text_primary })
@@ -814,7 +878,7 @@ fn render_profile_details_panel(
                         }
 
                         // Clear layout button
-                        if ui.button(RichText::new("🧹 Clear Layout").color(theme.warning).small()).clicked() {
+                        if ui.button(RichText::new("🗑 Clear Layout").color(theme.warning).small()).clicked() {
                             let prev = profile.clear_device_layout(vid, pid);
                             let _ = ProfileParser::save_file(p_path, &profile);
                             if let Some(p) = prev {
@@ -951,8 +1015,16 @@ fn render_snippet_browser(
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("🌐 Import SPAD.neXt Snippet (Ready-Made Device Layout)").color(theme.accent).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("✕ Close").clicked() {
+                    if ui.small_button("✖ Close").clicked() {
                         state.snippet_browser_open = false;
+                    }
+                    let can_undo = state.undo_snippet_merge.as_ref().is_some_and(|(p, _)| p == sel_path);
+                    if can_undo && ui.button(RichText::new("↩ Undo last import").color(theme.warning)).clicked() {
+                        if let Some((_, prev)) = state.undo_snippet_merge.take() {
+                            *profile = prev;
+                            let _ = ProfileParser::save_file(p_path, profile);
+                            state.status_banner = Some(("Undid the last snippet import".to_string(), false));
+                        }
                     }
                     if ui.button(RichText::new("📂 Import from local .xml...").color(theme.text_secondary)).clicked() {
                         if let Some(file) = rfd::FileDialog::new()
@@ -979,7 +1051,7 @@ fn render_snippet_browser(
 
             ui.label(
                 RichText::new(format!(
-                    "Importing a snippet replaces ONLY the layout of '{}'. It is a one-time copy into your profile.",
+                    "Importing adds the snippet's mappings for every controller it contains to this profile. Inputs the snippet does not define keep their current mappings; the snippet itself is not added to your profile list. (Selected controller: {})",
                     target_dev_name
                 ))
                 .color(theme.text_secondary)
@@ -1103,54 +1175,36 @@ fn apply_snippet_to_device(
     target_mapped_count: usize,
     incoming: &SpadProfile,
 ) {
-    // Find matching device in incoming or take first device with actions
-    let inc_dev = incoming
+    let _ = target_mapped_count;
+    let has_mappings = incoming.devices.as_ref().is_some_and(|d| d.items.iter().any(|dev| dev.total_action_count() > 0));
+    if !has_mappings {
+        state.status_banner = Some(("The SPAD.neXt profile contains no mappings".to_string(), true));
+        return;
+    }
+    let before = profile.clone();
+
+    // Every device in the snippet is merged into the matching controller of this profile
+    // (by VID:PID); only the inputs the snippet defines are replaced.
+    let summary = profile.merge_from_profile(incoming, None, false);
+
+    // A snippet made for another model of controller: map it onto the selected one.
+    let matches_selected = incoming
         .devices
         .as_ref()
-        .and_then(|d| {
-            d.items
-                .iter()
-                .find(|dev| dev.matches_vid_pid(target_vid, target_pid) && dev.total_action_count() > 0)
-                .or_else(|| d.items.iter().find(|dev| dev.total_action_count() > 0))
-                .or_else(|| d.items.first())
-        })
-        .cloned();
-
-    let Some(mut new_layout) = inc_dev else {
-        state.status_banner = Some(("Downloaded snippet contained no device mappings".to_string(), true));
-        return;
-    };
-
-    new_layout.name = Some(target_dev_name.to_string());
-    new_layout.vendor_id = Some(format!("0x{:04X}", target_vid));
-    new_layout.product_id = Some(format!("0x{:04X}", target_pid));
-
-    if target_mapped_count > 0 {
-        // Show confirmation before overwriting
-        state.confirm_overwrite = Some(SnippetOverwriteConfirm {
-            device_name: target_dev_name.to_string(),
-            vendor_id: target_vid,
-            product_id: target_pid,
-            bindings_count: target_mapped_count,
-            downloaded_layout: new_layout,
-            profile_path: sel_path.to_string(),
-        });
-    } else {
-        // Direct import without asking
-        let prev = profile.replace_device_layout(target_vid, target_pid, new_layout);
-        let _ = ProfileParser::save_file(p_path, profile);
-        if let Some(p) = prev {
-            state.undo_last_import = Some(SnippetUndoData {
-                profile_path: sel_path.to_string(),
-                vendor_id: target_vid,
-                product_id: target_pid,
-                previous_layout: p,
-            });
-        }
-        state.snippet_browser_open = false;
-        state.status_banner = Some((
-            format!("Imported snippet layout for '{}'. Click 'Undo' if you want to revert.", target_dev_name),
-            false,
-        ));
+        .is_some_and(|d| d.items.iter().any(|dev| dev.matches_vid_pid(target_vid, target_pid)));
+    if !matches_selected && target_vid != 0 {
+        let id = format!("DEV_{:04X}_{:04X}", target_vid, target_pid);
+        profile.merge_from_profile(incoming, Some((target_vid, target_pid, &id, target_dev_name)), false);
     }
+
+    let _ = ProfileParser::save_file(p_path, profile);
+    state.undo_snippet_merge = Some((sel_path.to_string(), before));
+    state.status_banner = Some((
+        format!(
+            "Added {} mappings from the SPAD.neXt profile ({}). Import another or click 'Undo last import'.",
+            summary.total_events_merged,
+            summary.merged_device_names.join(", ")
+        ),
+        false,
+    ));
 }

@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename = "Profile")]
 pub struct SpadProfile {
-    #[serde(rename = "@Version", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "@Version", default, deserialize_with = "lenient::opt_num", skip_serializing_if = "Option::is_none")]
     pub version: Option<i32>,
 
-    #[serde(rename = "@IsStockProfile", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "@IsStockProfile", default, deserialize_with = "lenient::opt_bool", skip_serializing_if = "Option::is_none")]
     pub is_stock_profile: Option<bool>,
 
     #[serde(rename = "Name", default, skip_serializing_if = "Option::is_none")]
@@ -114,7 +114,7 @@ pub struct DeviceProfile {
     #[serde(rename = "@Serial", default, skip_serializing_if = "Option::is_none")]
     pub serial: Option<String>,
 
-    #[serde(rename = "@DeviceIndex", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "@DeviceIndex", default, deserialize_with = "lenient::opt_num", skip_serializing_if = "Option::is_none")]
     pub device_index: Option<i32>,
 
     #[serde(rename = "@Name", default, skip_serializing_if = "Option::is_none")]
@@ -132,7 +132,7 @@ pub struct DevicePage {
     #[serde(rename = "@ID", default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 
-    #[serde(rename = "@IsDefaultPage", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "@IsDefaultPage", default, deserialize_with = "lenient::opt_bool", skip_serializing_if = "Option::is_none")]
     pub is_default: Option<bool>,
 
     #[serde(rename = "@Name", default, skip_serializing_if = "Option::is_none")]
@@ -171,10 +171,10 @@ pub struct EventDefinition {
     #[serde(rename = "@Trigger", default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<String>,
 
-    #[serde(rename = "@Priority", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "@Priority", default, deserialize_with = "lenient::opt_num", skip_serializing_if = "Option::is_none")]
     pub priority: Option<i32>,
 
-    #[serde(rename = "@IsFinal", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "@IsFinal", default, deserialize_with = "lenient::opt_bool", skip_serializing_if = "Option::is_none")]
     pub is_final: Option<bool>,
 
     #[serde(rename = "@ConditionBinding", default, skip_serializing_if = "Option::is_none")]
@@ -234,6 +234,9 @@ pub enum EventActionItem {
     #[serde(rename = "EventActionCustomAxis")]
     CustomAxis(EventActionCustomAxis),
 
+    #[serde(rename = "EventActionRangedAxis")]
+    RangedAxis(EventActionRangedAxis),
+
     #[serde(rename = "EventActionChangeValue")]
     ChangeValue(EventActionChangeValue),
 
@@ -263,6 +266,66 @@ pub struct EventActionControl {
 
     #[serde(rename = "@Value", default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+
+    /// `<Parameter Value="..."/>` children (SPAD.neXt writes event parameters this way).
+    #[serde(rename = "Parameter", default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<ControlParameter>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlParameter {
+    #[serde(rename = "@Value", default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+impl EventActionControl {
+    /// The event parameter: the `Value` attribute, else the first `<Parameter>`.
+    pub fn effective_value(&self) -> Option<&str> {
+        self.value
+            .as_deref()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| self.parameters.iter().find_map(|p| p.value.as_deref()))
+    }
+}
+
+/// SPAD.neXt calibrated lever (`LEVER_NOREVERSE_THROTTLE`, `LEVER_MIXTURE`, `LEVER_FLAPS`, ...).
+/// Options: `MIN`/`MINTO`, `IDLE`/`IDLETO`, `MAX`/`MAXTO` (zone edges, raw device values when
+/// `USERAWVALUE=True`) and `OPTION1..4` (engines driven by this lever).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventActionRangedAxis {
+    #[serde(rename = "@ConfigID", default)]
+    pub config_id: String,
+
+    #[serde(rename = "Options", default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<ProfileOptionsList>,
+}
+
+impl EventActionRangedAxis {
+    pub fn option(&self, key: &str) -> Option<&str> {
+        self.options
+            .as_ref()?
+            .items
+            .iter()
+            .find(|o| o.key.eq_ignore_ascii_case(key))
+            .and_then(|o| o.value.as_deref())
+    }
+
+    pub fn option_f64(&self, key: &str) -> Option<f64> {
+        self.option(key).and_then(|v| v.trim().parse().ok())
+    }
+
+    pub fn option_bool(&self, key: &str) -> bool {
+        self.option(key).is_some_and(|v| v.trim().eq_ignore_ascii_case("true"))
+    }
+
+    pub fn set_option(&mut self, key: &str, value: impl Into<String>) {
+        let value = value.into();
+        let opts = self.options.get_or_insert_with(|| ProfileOptionsList { items: Vec::new() });
+        match opts.items.iter_mut().find(|o| o.key.eq_ignore_ascii_case(key)) {
+            Some(o) => o.value = Some(value),
+            None => opts.items.push(ProfileOption { key: key.to_string(), value: Some(value) }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,7 +345,7 @@ pub struct EventActionChangeValue {
     #[serde(rename = "@Target", alias = "@TargetDataDefinition", default)]
     pub target: String, // e.g. "LVAR:A32NX_AUTOPILOT_1_ACTIVE" or "LOCAL:FOO"
 
-    #[serde(rename = "@Operation", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "@Operation", alias = "@ValueOperation", default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<String>, // "Set", "Increment", "Decrement", "ToggleBit"
 
     #[serde(rename = "@Value", default, skip_serializing_if = "Option::is_none")]
@@ -300,7 +363,7 @@ pub struct EventActionScript {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventActionDelay {
-    #[serde(rename = "@Delay")]
+    #[serde(rename = "@Delay", default, deserialize_with = "lenient::num_or_zero")]
     pub delay_ms: u64,
 }
 
@@ -311,6 +374,24 @@ pub struct EventActionDisplayValue {
 
     #[serde(rename = "@Value", default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+
+    /// Data source shown on the display, e.g. `LVAR:ngx_SPDwindow` or `SIMCONNECT:NAV ACTIVE FREQUENCY:1`.
+    #[serde(rename = "@TargetDataDefinition", default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+
+    /// Number format mask, e.g. `000`, `0000`, `-----`.
+    #[serde(rename = "@DisplayFormat", default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+
+    #[serde(rename = "@DisplayFormatting", default, skip_serializing_if = "Option::is_none")]
+    pub formatting: Option<String>,
+
+    /// Input whose display this writes to, when not the event's own input.
+    #[serde(rename = "@TargetName", default, skip_serializing_if = "Option::is_none")]
+    pub target_name: Option<String>,
+
+    #[serde(rename = "@TargetDisplay", default, skip_serializing_if = "Option::is_none")]
+    pub target_display: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -336,14 +417,15 @@ pub fn bound_to_matches(profile_bound: &str, input_name: &str) -> bool {
     }
     let norm = |s: &str| -> String {
         match s.to_uppercase().as_str() {
-            "X_AXIS" | "AXIS_X" => "AXIS_X".to_string(),
-            "Y_AXIS" | "AXIS_Y" => "AXIS_Y".to_string(),
-            "Z_AXIS" | "AXIS_Z" => "AXIS_Z".to_string(),
-            "RX_AXIS" | "AXIS_RX" => "AXIS_RX".to_string(),
-            "RY_AXIS" | "AXIS_RY" => "AXIS_RY".to_string(),
-            "RZ_AXIS" | "AXIS_RZ" => "AXIS_RZ".to_string(),
-            "SLIDER_0" | "AXIS_THROTTLE" => "AXIS_THROTTLE".to_string(),
-            "SLIDER_1" | "AXIS_RUDDER" => "AXIS_RUDDER".to_string(),
+            // SPAD.neXt (DirectInput) names <-> Linux evdev names
+            "X_AXIS" | "AXIS_X" | "ABS_X" => "AXIS_X".to_string(),
+            "Y_AXIS" | "AXIS_Y" | "ABS_Y" => "AXIS_Y".to_string(),
+            "Z_AXIS" | "AXIS_Z" | "ABS_Z" => "AXIS_Z".to_string(),
+            "RX_AXIS" | "AXIS_RX" | "ABS_RX" => "AXIS_RX".to_string(),
+            "RY_AXIS" | "AXIS_RY" | "ABS_RY" => "AXIS_RY".to_string(),
+            "RZ_AXIS" | "AXIS_RZ" | "ABS_RZ" => "AXIS_RZ".to_string(),
+            "SLIDER_0" | "AXIS_THROTTLE" | "ABS_THROTTLE" => "AXIS_THROTTLE".to_string(),
+            "SLIDER_1" | "AXIS_RUDDER" | "ABS_RUDDER" => "AXIS_RUDDER".to_string(),
             other => other.to_string(),
         }
     };
@@ -798,14 +880,17 @@ impl SpadProfile {
                                         .iter_mut()
                                         .find(|e| bound_to_matches(&e.bound_to, &ev.bound_to))
                                     {
-                                        // Prefer the event that actually has actions
-                                        let new_has_acts = ev
+                                        // Same input in both entries: keep the definitions of both
+                                        // (e.g. hat north in one, south in the other), skipping
+                                        // exact duplicates.
+                                        let target_defs = ex_ev
                                             .event_definitions
-                                            .as_ref()
-                                            .map(|d| !d.items.is_empty())
-                                            .unwrap_or(false);
-                                        if new_has_acts {
-                                            *ex_ev = ev;
+                                            .get_or_insert_with(|| EventDefinitionsList { items: Vec::new() });
+                                        for def in ev.event_definitions.map(|d| d.items).unwrap_or_default() {
+                                            let dup = target_defs.items.iter().any(|t| format!("{:?}", t) == format!("{:?}", def));
+                                            if !dup {
+                                                target_defs.items.push(def);
+                                            }
                                         }
                                     } else {
                                         target_events.items.push(ev);
@@ -957,5 +1042,30 @@ impl SpadProfile {
                 }],
             });
         }
+    }
+}
+
+/// SPAD.neXt writes empty attributes (`IsFinal=""`, `Priority=""`) and capitalised booleans
+/// (`True`); these deserializers treat empty as absent instead of failing the whole profile.
+mod lenient {
+    use serde::{Deserialize, Deserializer};
+    use std::str::FromStr;
+
+    pub fn opt_bool<'de, D: Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Error> {
+        let s = Option::<String>::deserialize(d)?;
+        Ok(s.and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Some(true),
+            "false" | "0" | "no" => Some(false),
+            _ => None,
+        }))
+    }
+
+    pub fn opt_num<'de, D: Deserializer<'de>, T: FromStr>(d: D) -> Result<Option<T>, D::Error> {
+        let s = Option::<String>::deserialize(d)?;
+        Ok(s.and_then(|s| s.trim().parse::<T>().ok()))
+    }
+
+    pub fn num_or_zero<'de, D: Deserializer<'de>, T: FromStr + Default>(d: D) -> Result<T, D::Error> {
+        Ok(opt_num(d)?.unwrap_or_default())
     }
 }

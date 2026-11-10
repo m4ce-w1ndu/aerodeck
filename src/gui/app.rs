@@ -76,6 +76,8 @@ pub struct SpadLinxApp {
     last_input: Option<(String, String, String, Instant)>,
     discovered_lvars: Vec<String>,
     live_lvar_values: HashMap<String, f64>,
+    live_simvars: Vec<(String, Option<f64>)>,
+    pmdg_status: Vec<crate::gui::backend::PmdgUiStatus>,
     pub live_axes: HashMap<String, LiveAxisState>,
     logs: Vec<LogEntry>,
     auto_scroll_logs: bool,
@@ -112,7 +114,8 @@ impl SpadLinxApp {
             port
         };
 
-        ProfileRepository::ensure_builtin_profiles_on_disk();
+        // Built-in profiles are no longer written to ./profiles on startup; they are
+        // installed only when picked from the repository.
         let discovered_aircrafts = AircraftScanner::discover_installed_aircraft(None);
         let aircraft_assignments = AircraftAssignmentManager::load_or_default();
 
@@ -142,6 +145,8 @@ impl SpadLinxApp {
             last_input: None,
             discovered_lvars: Vec::new(),
             live_lvar_values: HashMap::new(),
+            live_simvars: Vec::new(),
+            pmdg_status: Vec::new(),
             live_axes: HashMap::new(),
             logs: Vec::new(),
             auto_scroll_logs: true,
@@ -270,6 +275,12 @@ impl SpadLinxApp {
                     self.discovered_lvars = lvars;
                     self.bridge_lvar_count = self.discovered_lvars.len();
                 }
+                GuiEvent::PmdgStatus(rows) => {
+                    self.pmdg_status = rows;
+                }
+                GuiEvent::SimVarsUpdated(list) => {
+                    self.live_simvars = list;
+                }
                 GuiEvent::LvarUpdated { name, value } => {
                     self.live_lvar_values.insert(name, value);
                 }
@@ -395,23 +406,22 @@ impl eframe::App for SpadLinxApp {
                         &self.cmd_tx,
                         &self.discovered_lvars,
                         &self.live_lvar_values,
+                        &self.live_simvars,
+                        &self.pmdg_status,
                         self.bridge_active,
+                        &self.theme,
                     );
                 }
+                // Single-column views scroll as a whole, using the full panel height.
                 ActiveTab::VirtualPanels => {
-                    render_virtual_panel_view(
-                        ui,
-                        &mut self.virtual_state,
-                        &self.cmd_tx,
-                    );
+                    egui::ScrollArea::vertical().id_salt("panels_page").auto_shrink([false, false]).show(ui, |ui| {
+                        render_virtual_panel_view(ui, &mut self.virtual_state, &self.cmd_tx);
+                    });
                 }
                 ActiveTab::ProtonSetup => {
-                    render_proton_view(
-                        ui,
-                        &mut self.proton_state,
-                        &mut self.simconnect_port,
-                        &self.cmd_tx,
-                    );
+                    egui::ScrollArea::vertical().id_salt("proton_page").auto_shrink([false, false]).show(ui, |ui| {
+                        render_proton_view(ui, &mut self.proton_state, &mut self.simconnect_port, &self.cmd_tx);
+                    });
                 }
                 ActiveTab::Logs => {
                     render_log_view(ui, &self.logs, &mut self.auto_scroll_logs);
@@ -467,7 +477,7 @@ fn render_header_row_1(app: &mut SpadLinxApp, ui: &mut Ui) {
             (ActiveTab::Mapping, "🎮 Mapping", "Ctrl+1"),
             (ActiveTab::AircraftAndProfiles, "✈ Profiles", "Ctrl+2"),
             (ActiveTab::Lvars, "🔍 LVARs", "Ctrl+3"),
-            (ActiveTab::VirtualPanels, "🎛 Panels", "Ctrl+4"),
+            (ActiveTab::VirtualPanels, "🕹 Panels", "Ctrl+4"),
             (ActiveTab::ProtonSetup, "⚙ Proton", "Ctrl+5"),
             (ActiveTab::Logs, "📋 Logs", "Ctrl+6"),
         ];
@@ -564,7 +574,7 @@ fn render_header_row_1(app: &mut SpadLinxApp, ui: &mut Ui) {
 
             // Connection Badge Button
             let status_text = if app.simconnect_connected {
-                "● SimConnect Online"
+                "⏺ SimConnect Online"
             } else {
                 "○ SimConnect Offline"
             };
@@ -627,7 +637,7 @@ fn render_context_row_2(app: &mut SpadLinxApp, ui: &mut Ui) {
                 app.theme.text_secondary
             };
             ui.label(
-                RichText::new(format!("● Input: {} [{}]", bound, act))
+                RichText::new(format!("⏺ Input: {} [{}]", bound, act))
                     .color(col)
                     .small()
                     .strong(),
@@ -667,7 +677,7 @@ fn render_context_row_2(app: &mut SpadLinxApp, ui: &mut Ui) {
             };
             ui.label(
                 RichText::new(if proton_ready {
-                    "● Steam Proton Ready"
+                    "⏺ Steam Proton Ready"
                 } else {
                     "○ Steam Proton Offline"
                 })

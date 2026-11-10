@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
-use tracing::{debug, info};
+use tracing::{debug, info, trace, warn};
 
 use crate::bridge::{SpadLvarBridge, CALC_RET_VOID};
 use crate::simconnect::SimConnectClient;
@@ -16,7 +16,24 @@ pub struct ProfileExecutor {
     bridge: Arc<SpadLvarBridge>,
     local_vars: Arc<Mutex<HashMap<String, String>>>,
     active_page_idx: Arc<Mutex<usize>>,
+    /// Buttons currently held, keyed by (device, input, trigger prefix).
+    presses: std::sync::Mutex<HashMap<(String, String, String), PressState>>,
+    press_counter: std::sync::atomic::AtomicU64,
+    notices: std::sync::Mutex<Vec<String>>,
+    noticed: std::sync::Mutex<std::collections::HashSet<String>>,
 }
+
+#[derive(Debug, Clone, Copy)]
+struct PressState {
+    generation: u64,
+    long_fired: bool,
+}
+
+/// Hold time after which `PRESSLONG` fires (and `PRESSSHORT` no longer will).
+pub const LONG_PRESS: Duration = Duration::from_millis(500);
+/// `HELD` fires on press, then repeats at this interval after `HELD_DELAY`.
+pub const HELD_DELAY: Duration = Duration::from_millis(300);
+pub const HELD_REPEAT: Duration = Duration::from_millis(100);
 
 impl ProfileExecutor {
     pub fn new(
@@ -33,13 +50,156 @@ impl ProfileExecutor {
             }
         }
 
+        // Subscribe every SimVar the profile reads or writes, so conditions and displays
+        // have values before the first input arrives.
+        let simvars = collect_simvar_refs(&profile);
+        if uses_pmdg(&profile) {
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                let sc = simconnect.clone();
+                rt.spawn(async move {
+                    // First call scans the MSFS packages for SDK headers.
+                    let _ = tokio::task::spawn_blocking(crate::pmdg::installed_sdks).await;
+                    if crate::pmdg::installed_sdks().is_empty() {
+                        warn!("Profile uses PMDG controls but no PMDG SDK header was found in the MSFS packages");
+                    } else if let Err(e) = sc.ensure_pmdg().await {
+                        warn!("Cannot register PMDG data areas: {}", e);
+                    }
+                });
+            }
+        }
+        if !simvars.is_empty() {
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                let sc = simconnect.clone();
+                rt.spawn(async move {
+                    info!("Subscribing {} SimVars used by the profile", simvars.len());
+                    for name in simvars {
+                        if let Err(e) = sc.subscribe_simvar(&name).await {
+                            warn!("Cannot subscribe SimVar '{}': {}", name, e);
+                        }
+                    }
+                });
+            }
+        }
+
         Self {
             profile,
             simconnect,
             bridge,
             local_vars: Arc::new(Mutex::new(initial_vars)),
             active_page_idx: Arc::new(Mutex::new(0)),
+            presses: std::sync::Mutex::new(HashMap::new()),
+            press_counter: std::sync::atomic::AtomicU64::new(0),
+            notices: std::sync::Mutex::new(Vec::new()),
+            noticed: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
+    }
+
+    /// Physical press or release with SPAD.neXt timing semantics:
+    ///
+    /// * `PRESS` on press, `RELEASE` on release
+    /// * `PRESSSHORT` on release if held less than [`LONG_PRESS`]
+    /// * `PRESSLONG` once the button has been held for [`LONG_PRESS`]
+    /// * `HELD` on press, then repeatedly while held (trim, POV hats)
+    ///
+    /// `trigger_prefix` is empty for buttons and `POV_NORTH_`-style for hat directions.
+    pub async fn handle_button(self: &Arc<Self>, device_id: &str, bound_to: &str, trigger_prefix: &str, pressed: bool) {
+        let key = (device_id.to_string(), bound_to.to_string(), trigger_prefix.to_string());
+        let trig = |t: &str| format!("{}{}", trigger_prefix, t);
+        let defined = self.defined_triggers(device_id, bound_to).await;
+        if defined.is_empty() && pressed {
+            self.note_unmapped(device_id, bound_to);
+        }
+        let has = |t: &str| defined.iter().any(|d| d.eq_ignore_ascii_case(&trig(t)));
+
+        if pressed {
+            let generation = self.press_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if let Ok(mut p) = self.presses.lock() {
+                p.insert(key.clone(), PressState { generation, long_fired: false });
+            }
+            let _ = self.dispatch_event(device_id, bound_to, &trig("PRESS")).await;
+            let wants_held = has("HELD");
+            if wants_held {
+                let _ = self.dispatch_event(device_id, bound_to, &trig("HELD")).await;
+            }
+            if wants_held || has("PRESSLONG") {
+                let this = self.clone();
+                tokio::spawn(async move { this.run_hold_timer(key, generation, wants_held).await });
+            }
+        } else {
+            let state = self.presses.lock().ok().and_then(|mut p| p.remove(&key));
+            if !state.is_some_and(|s| s.long_fired) {
+                let _ = self.dispatch_event(device_id, bound_to, &trig("PRESSSHORT")).await;
+            }
+            let _ = self.dispatch_event(device_id, bound_to, &trig("RELEASE")).await;
+        }
+    }
+
+    async fn run_hold_timer(self: Arc<Self>, key: (String, String, String), generation: u64, repeat_held: bool) {
+        let (device_id, bound_to, prefix) = (&key.0, &key.1, &key.2);
+        let start = tokio::time::Instant::now();
+        let still_held = |this: &Self| {
+            this.presses.lock().ok().and_then(|p| p.get(&key).copied()).is_some_and(|s| s.generation == generation)
+        };
+        let mut long_done = false;
+        let mut next_held = start + HELD_DELAY;
+        loop {
+            let next_long = start + LONG_PRESS;
+            let wake = match (long_done, repeat_held) {
+                (false, true) => next_long.min(next_held),
+                (false, false) => next_long,
+                (true, true) => next_held,
+                (true, false) => return,
+            };
+            tokio::time::sleep_until(wake).await;
+            if !still_held(&self) {
+                return;
+            }
+            let now = tokio::time::Instant::now();
+            if !long_done && now >= next_long {
+                long_done = true;
+                if let Ok(mut p) = self.presses.lock() {
+                    if let Some(s) = p.get_mut(&key) {
+                        s.long_fired = true;
+                    }
+                }
+                let _ = self.dispatch_event(device_id, bound_to, &format!("{}PRESSLONG", prefix)).await;
+            }
+            if repeat_held && now >= next_held {
+                let _ = self.dispatch_event(device_id, bound_to, &format!("{}HELD", prefix)).await;
+                next_held = now + HELD_REPEAT;
+            }
+        }
+    }
+
+    /// Current value of a profile-local variable (`LOCAL:name`).
+    pub async fn local_var(&self, name: &str) -> Option<String> {
+        self.local_vars.lock().await.get(name).cloned()
+    }
+
+    /// Every definition bound to an input on the active page, across all profile entries for
+    /// the device and all `<Event>`s with that `BoundTo` (merged or imported profiles can split
+    /// one input, e.g. hat north and south, over several entries).
+    async fn matching_definitions(&self, device_id: &str, bound_to: &str) -> Vec<&EventDefinition> {
+        let page_idx = *self.active_page_idx.lock().await;
+        self.profile
+            .devices
+            .iter()
+            .flat_map(|d| &d.items)
+            .filter(|d| d.matches_device_id(device_id) && !d.pages.is_empty())
+            .map(|d| &d.pages[page_idx.min(d.pages.len() - 1)])
+            .flat_map(|page| page.events.iter().flat_map(|e| &e.items))
+            .filter(|e| bound_to_matches(&e.bound_to, bound_to))
+            .flat_map(|e| e.event_definitions.iter().flat_map(|d| &d.items))
+            .collect()
+    }
+
+    /// Triggers (upper-case) defined for an input on the active page.
+    async fn defined_triggers(&self, device_id: &str, bound_to: &str) -> Vec<String> {
+        self.matching_definitions(device_id, bound_to)
+            .await
+            .into_iter()
+            .map(|d| d.trigger.as_deref().unwrap_or("PRESS").to_ascii_uppercase())
+            .collect()
     }
 
     pub fn profile(&self) -> &SpadProfile {
@@ -63,168 +223,159 @@ impl ProfileExecutor {
         }
     }
 
-    /// Dispatches an analog axis event to SimConnect based on profile mapping
-    pub async fn dispatch_axis_event(
+    /// Dispatches an analog axis movement to SimConnect based on the profile mapping.
+    ///
+    /// `raw`, `min` and `max` are the hardware values as reported by the device; the
+    /// position is rescaled to the range the target sim event expects (see [`sim_axis_range`]).
+    /// Dispatches an analog axis movement to SimConnect based on the profile mapping.
+    /// Returns whether anything was sent. The first time an input is unmapped, or first
+    /// sends, a notice is queued for the UI (see [`Self::take_notices`]).
+    pub async fn dispatch_axis_event(&self, device_id: &str, bound_to: &str, raw: i32, min: i32, max: i32) -> Result<bool> {
+        let sent = self.dispatch_axis_inner(device_id, bound_to, raw, min, max).await?;
+        if sent.is_empty() {
+            self.note_unmapped(device_id, bound_to);
+        } else {
+            self.note_once(format!("sent:{}:{}", device_id, bound_to), || {
+                format!("{} on {} -> {}", bound_to, device_label(device_id), sent.join(", "))
+            });
+        }
+        Ok(!sent.is_empty())
+    }
+
+    /// Notices for the UI log (unmapped inputs, first successful use), drained by the caller.
+    pub fn take_notices(&self) -> Vec<String> {
+        self.notices.lock().map(|mut n| std::mem::take(&mut *n)).unwrap_or_default()
+    }
+
+    fn note_once(&self, key: String, msg: impl FnOnce() -> String) {
+        let first = self.noticed.lock().map(|mut s| s.insert(key)).unwrap_or(false);
+        if first {
+            if let Ok(mut n) = self.notices.lock() {
+                n.push(msg());
+            }
+        }
+    }
+
+    fn note_unmapped(&self, device_id: &str, bound_to: &str) {
+        let profile = self.profile.name.clone().unwrap_or_else(|| "unnamed".into());
+        self.note_once(format!("unmapped:{}:{}", device_id, bound_to), || {
+            format!(
+                "{} on {} is not mapped in the active profile '{}' — map it in the Mapping tab or bind this aircraft to another profile",
+                bound_to,
+                device_label(device_id),
+                profile
+            )
+        });
+    }
+
+    async fn dispatch_axis_inner(
         &self,
         device_id: &str,
         bound_to: &str,
-        normalized: f64,
-        is_bipolar: bool,
-    ) -> Result<bool> {
-        debug!("Dispatching axis on device '{}': bound_to='{}', normalized={}", device_id, bound_to, normalized);
-
-        let devices = match &self.profile.devices {
-            Some(d) => &d.items,
-            None => return Ok(false),
-        };
-
-        let device = devices.iter().find(|d| d.matches_device_id(device_id));
-
-        let device = match device {
-            Some(d) => d,
-            None => return Ok(false),
-        };
-
-        if device.pages.is_empty() {
-            return Ok(false);
+        raw: i32,
+        min: i32,
+        max: i32,
+    ) -> Result<Vec<String>> {
+        let defs = self.matching_definitions(device_id, bound_to).await;
+        if defs.is_empty() {
+            return Ok(Vec::new());
         }
 
-        let page_idx = *self.active_page_idx.lock().await;
-        let page = &device.pages[page_idx.min(device.pages.len() - 1)];
-
-        let events = match &page.events {
-            Some(e) => &e.items,
-            None => return Ok(false),
-        };
-
-        let spad_event = match events.iter().find(|e| bound_to_matches(&e.bound_to, bound_to)) {
-            Some(e) => e,
-            None => return Ok(false),
-        };
-
-        let defs = match &spad_event.event_definitions {
-            Some(d) => &d.items,
-            None => return Ok(false),
-        };
-
-        let sim_axis_value = if is_bipolar {
-            (normalized * 16383.0).round().clamp(-16383.0, 16383.0) as i32
-        } else {
-            (normalized * 16383.0).round().clamp(0.0, 16383.0) as i32
-        };
+        let position = axis_position(raw, min, max);
+        let mut sent: Vec<String> = Vec::new();
 
         for def in defs {
-            if let Some(actions) = &def.actions {
-                for act in &actions.items {
-                    match act {
-                        EventActionItem::Control(ctrl) => {
-                            let event_name = ctrl.target.strip_prefix("SIMCONNECT:").unwrap_or(&ctrl.target);
-                            let _ = self.simconnect.map_client_event_to_sim_event(2, event_name).await;
-                            let _ = self.simconnect.transmit_client_event(0, 2, sim_axis_value as u32).await;
+            // Axis movements only fire VALUE (or trigger-less) definitions; PRESS/RELEASE
+            // definitions on the same input belong to its push-button.
+            let trig = def.trigger.as_deref().unwrap_or("");
+            if !(trig.is_empty() || trig.eq_ignore_ascii_case("VALUE")) {
+                continue;
+            }
+            let Some(actions) = &def.actions else { continue };
+            for act in &actions.items {
+                if let EventActionItem::RangedAxis(lever) = act {
+                    match super::lever::lever_outputs(lever, raw, min, max) {
+                        Some(outputs) => {
+                            for (event_name, value) in outputs {
+                                if !sent.contains(&event_name) {
+                                    sent.push(event_name.clone());
+                                }
+                                trace!("Lever {} ({}) -> {} = {}", bound_to, lever.config_id, event_name, value);
+                                if let Err(e) = self.simconnect.transmit_event(&event_name, value as u32).await {
+                                    warn!("Failed to send lever event {}: {}", event_name, e);
+                                }
+                            }
                         }
-                        EventActionItem::CustomAxis(caxis) => {
-                            let invert = caxis
-                                .options
-                                .as_ref()
-                                .map(|opts| {
-                                    opts.items.iter().any(|o| {
-                                        o.key.eq_ignore_ascii_case("INVERTAXIS")
-                                            && o.value.as_deref() == Some("True")
-                                    })
-                                })
-                                .unwrap_or(false);
-                            let val = if invert { -sim_axis_value } else { sim_axis_value };
-                            let event_name = caxis
-                                .target
-                                .strip_prefix("SIMCONNECT:")
-                                .unwrap_or(&caxis.target);
-                            let _ = self.simconnect.map_client_event_to_sim_event(2, event_name).await;
-                            let _ = self.simconnect.transmit_client_event(0, 2, val as u32).await;
-                        }
-                        _ => {}
+                        None => debug!("Lever type '{}' is not supported yet", lever.config_id),
                     }
+                    continue;
+                }
+                let (target, invert) = match act {
+                    EventActionItem::Control(ctrl) => (ctrl.target.as_str(), false),
+                    EventActionItem::CustomAxis(caxis) => (caxis.target.as_str(), option_is_true(caxis.options.as_ref(), "INVERTAXIS")),
+                    _ => continue,
+                };
+                let Some(event_name) = sim_event_name(target) else {
+                    debug!("Axis target '{}' is not a SimConnect event; skipped", target);
+                    continue;
+                };
+                let p = if invert { 1.0 - position } else { position };
+                let value = scale_axis(p, sim_axis_range(event_name));
+                trace!("Axis {} -> {} = {}", bound_to, event_name, value);
+                if let Err(e) = self.simconnect.transmit_event(event_name, value as u32).await {
+                    warn!("Failed to send axis event {}: {}", event_name, e);
+                }
+                if !sent.iter().any(|e| e == event_name) {
+                    sent.push(event_name.to_string());
                 }
             }
         }
 
-        Ok(true)
+        Ok(sent)
     }
 
     /// Triggers an input event from a hardware device (e.g. bound_to: "AP_BUTTON", trigger: "PRESSED")
     pub async fn dispatch_event(&self, device_id: &str, bound_to: &str, trigger: &str) -> Result<bool> {
         debug!("Dispatching event on device '{}': bound_to='{}', trigger='{}'", device_id, bound_to, trigger);
 
-        let devices = match &self.profile.devices {
-            Some(d) => &d.items,
-            None => return Ok(false),
-        };
-
-        // Find device profile
-        let device = devices.iter().find(|d| d.matches_device_id(device_id));
-
-        let device = match device {
-            Some(d) => d,
-            None => {
-                debug!("Device '{}' not configured in profile", device_id);
-                return Ok(false);
-            }
-        };
-
-        if device.pages.is_empty() {
+        let defs = self.matching_definitions(device_id, bound_to).await;
+        if defs.is_empty() {
             return Ok(false);
         }
 
-        let page_idx = *self.active_page_idx.lock().await;
-        let page = &device.pages[page_idx.min(device.pages.len() - 1)];
-
-        let events = match &page.events {
-            Some(e) => &e.items,
-            None => return Ok(false),
-        };
-
-        let spad_event = events.iter().find(|e| bound_to_matches(&e.bound_to, bound_to));
-        let spad_event = match spad_event {
-            Some(e) => e,
-            None => {
-                debug!("No event binding for '{}' on page '{}'", bound_to, page.name.as_deref().unwrap_or(""));
-                return Ok(false);
-            }
-        };
-
-        let defs = match &spad_event.event_definitions {
-            Some(d) => &d.items,
-            None => return Ok(false),
-        };
-
-        let lvars = {
-            // Snapshot of LVARs
-            let known = self.bridge.get_known_lvars().await;
-            let mut map = HashMap::new();
-            for k in known {
-                if let Ok(val) = self.bridge.get_lvar(&k).await {
-                    map.insert(k, val);
-                }
-            }
-            map
-        };
-
+        // Cached values; reading each LVAR through the WASM bridge here would cost a
+        // round-trip per variable on every button press.
+        let lvars = self.bridge.get_lvar_values().await;
+        let simvars = self.simconnect.simvar_snapshot();
         let locals = self.local_vars.lock().await.clone();
-        let evaluator = ConditionEvaluator::new(&lvars, &locals);
+        let pmdg = self.simconnect.pmdg_snapshot();
+        let evaluator = ConditionEvaluator::new(&lvars, &locals).with_simvars(&simvars).with_pmdg(&pmdg);
+
+        // If any PMDG action on this input passes an explicit position value (0, 1, 2...),
+        // the input drives a switch position: an empty parameter then means position 0,
+        // not a mouse click (SPAD.neXt start levers: PRESS = 0, RELEASE = 1).
+        let pmdg_positional = defs.iter().flat_map(|d| d.actions.iter().flat_map(|a| &a.items)).any(|a| match a {
+            EventActionItem::Control(c) => {
+                pmdg_target(&c.target).is_some()
+                    && c.effective_value().and_then(|v| v.trim().parse::<u32>().ok()).is_some_and(|v| v < 0x1000)
+            }
+            _ => false,
+        });
 
         for def in defs {
+            // Leftover definitions without actions (e.g. after deleting actions in the editor)
+            // must not end processing through IsFinal.
+            if def.actions.as_ref().is_none_or(|a| a.items.is_empty()) {
+                continue;
+            }
             let def_trigger = def.trigger.as_deref().unwrap_or("");
-            let trigger_matches = def_trigger.is_empty()
-                || def_trigger.eq_ignore_ascii_case(trigger)
-                || (trigger.eq_ignore_ascii_case("PRESS")
-                    && (def_trigger.eq_ignore_ascii_case("PRESSSHORT")
-                        || def_trigger.eq_ignore_ascii_case("HELD")));
-            if !trigger_matches {
+            if !trigger_matches(def_trigger, trigger) {
                 continue;
             }
 
             if evaluator.evaluate_definition(def) {
                 info!("Event triggered: BoundTo='{}', Trigger='{}'", bound_to, trigger);
-                self.execute_actions(def).await?;
+                self.execute_actions(def, trigger, pmdg_positional).await?;
                 if def.is_final.unwrap_or(false) {
                     break;
                 }
@@ -234,7 +385,7 @@ impl ProfileExecutor {
         Ok(true)
     }
 
-    async fn execute_actions(&self, def: &EventDefinition) -> Result<()> {
+    async fn execute_actions(&self, def: &EventDefinition, trigger: &str, pmdg_positional: bool) -> Result<()> {
         let actions = match &def.actions {
             Some(a) => &a.items,
             None => return Ok(()),
@@ -243,22 +394,33 @@ impl ProfileExecutor {
         for act in actions {
             match act {
                 EventActionItem::Control(ctrl) => {
-                    info!("Action CONTROL -> '{}' (value: {:?})", ctrl.target, ctrl.value);
-                    let _event_name = ctrl.target.strip_prefix("SIMCONNECT:").unwrap_or(&ctrl.target);
-                    let val = ctrl.value.as_deref().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
-                    // Transmit client event
-                    let _ = self.simconnect.transmit_client_event(0, 1, val).await;
+                    let param = ctrl.effective_value();
+                    info!("Action CONTROL -> '{}' (value: {:?})", ctrl.target, param);
+                    if let Some((prefix, name)) = pmdg_target(&ctrl.target) {
+                        let val = match param.map(str::trim).filter(|p| !p.is_empty()) {
+                            Some(p) => parse_event_value(Some(p)),
+                            None if pmdg_positional => 0,
+                            None => crate::pmdg::default_parameter(trigger),
+                        };
+                        if let Err(e) = self.simconnect.transmit_pmdg_event(prefix, name, val).await {
+                            warn!("Failed to send PMDG event {}: {}", ctrl.target, e);
+                        }
+                        continue;
+                    }
+                    match sim_event_name(&ctrl.target) {
+                        Some(event_name) => {
+                            let val = parse_event_value(param);
+                            if let Err(e) = self.simconnect.transmit_event(event_name, val).await {
+                                warn!("Failed to send SimConnect event {}: {}", event_name, e);
+                            }
+                        }
+                        None => debug!("Control target '{}' is not supported yet; skipped", ctrl.target),
+                    }
                 }
                 EventActionItem::ChangeValue(chg) => {
                     info!("Action CHANGE_VALUE -> target='{}', op='{:?}', val='{:?}'", chg.target, chg.operation, chg.value);
-                    let val = chg.value.as_deref().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-                    if chg.target.starts_prefix_ci("LVAR:") {
-                        let lvar = chg.target.split(':').nth(1).unwrap_or(&chg.target);
-                        self.bridge.set_lvar(lvar, val).await?;
-                    } else if chg.target.starts_prefix_ci("LOCAL:") {
-                        let local_key = chg.target.split(':').nth(1).unwrap_or(&chg.target);
-                        let mut l = self.local_vars.lock().await;
-                        l.insert(local_key.to_string(), val.to_string());
+                    if let Err(e) = self.change_value(chg, trigger).await {
+                        warn!("CHANGE_VALUE on '{}' failed: {}", chg.target, e);
                     }
                 }
                 EventActionItem::Script(script) => {
@@ -281,12 +443,211 @@ impl ProfileExecutor {
     }
 }
 
-trait CaseInsensitivePrefix {
-    fn starts_prefix_ci(&self, prefix: &str) -> bool;
+impl ProfileExecutor {
+    async fn change_value(&self, chg: &EventActionChangeValue, trigger: &str) -> Result<()> {
+        let operand = chg.value.as_deref().and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(0.0);
+        let op = chg.operation.as_deref().unwrap_or("");
+        let Some((prefix, name)) = super::evaluator::split_data_prefix(chg.target.trim()) else {
+            anyhow::bail!("target has no data provider prefix");
+        };
+        match prefix.to_ascii_uppercase().as_str() {
+            "LVAR" => {
+                let name = name.trim_start_matches("L:").trim();
+                let current = self.bridge.get_lvar_values().await.get(name).copied().unwrap_or(0.0);
+                self.bridge.set_lvar(name, apply_operation(current, op, operand, trigger)).await
+            }
+            "LOCAL" => {
+                let mut locals = self.local_vars.lock().await;
+                let current = locals.get(name).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+                locals.insert(name.to_string(), apply_operation(current, op, operand, trigger).to_string());
+                Ok(())
+            }
+            "SIMCONNECT" | "MSFS" => {
+                let key = self.simconnect.subscribe_simvar(name).await?;
+                let current = self.simconnect.simvar(&key).unwrap_or(0.0);
+                self.simconnect.set_simvar(&key, apply_operation(current, op, operand, trigger)).await
+            }
+            other => anyhow::bail!("data provider '{}' is not supported yet", other),
+        }
+    }
 }
 
-impl CaseInsensitivePrefix for str {
-    fn starts_prefix_ci(&self, prefix: &str) -> bool {
-        self.len() >= prefix.len() && self[..prefix.len()].eq_ignore_ascii_case(prefix)
+/// Applies a SPAD.neXt `ChangeValue` operation.
+///
+/// With no explicit operation, a rotary trigger steps the value (clockwise adds the operand,
+/// counter-clockwise subtracts it), which is how SPAD.neXt tuner bindings are written.
+/// Anything else sets the value.
+pub fn apply_operation(current: f64, op: &str, operand: f64, trigger: &str) -> f64 {
+    let bit = || 1u64 << (operand as u32).min(63);
+    let cur_bits = current.max(0.0) as u64;
+    match op.trim().to_ascii_uppercase().as_str() {
+        "" | "SET" => {
+            let t = trigger.to_ascii_uppercase().replace(['_', ' '], "");
+            if t.contains("COUNTERCLOCKWISE") || t.ends_with("CCW") {
+                current - operand
+            } else if t.contains("CLOCKWISE") || t.ends_with("CW") {
+                current + operand
+            } else {
+                operand
+            }
+        }
+        "INCREMENT" | "INC" | "ADD" => current + operand,
+        "DECREMENT" | "DEC" | "SUB" | "SUBTRACT" => current - operand,
+        "MULTIPLY" => current * operand,
+        "DIVIDE" if operand != 0.0 => current / operand,
+        "TOGGLE" => {
+            if current != 0.0 { 0.0 } else if operand != 0.0 { operand } else { 1.0 }
+        }
+        "TOGGLEBIT" => (cur_bits ^ bit()) as f64,
+        "SETBIT" => (cur_bits | bit()) as f64,
+        "CLEARBIT" => (cur_bits & !bit()) as f64,
+        _ => operand,
     }
+}
+
+/// `evdev_044f_0407_event7` -> `device 044F:0407`, for log messages.
+fn device_label(device_id: &str) -> String {
+    let parts: Vec<&str> = device_id.split('_').collect();
+    match parts.as_slice() {
+        ["evdev", vid, pid, ..] => format!("device {}:{}", vid.to_ascii_uppercase(), pid.to_ascii_uppercase()),
+        _ => device_id.to_string(),
+    }
+}
+
+/// Whether a definition's trigger fires for an incoming trigger. A definition without a
+/// trigger fires on press; `PRESSED` / `RELEASED` are accepted spellings.
+pub fn trigger_matches(definition: &str, incoming: &str) -> bool {
+    let canon = |t: &str| match t.trim().to_ascii_uppercase().as_str() {
+        "" | "PRESSED" => "PRESS".to_string(),
+        "RELEASED" => "RELEASE".to_string(),
+        other => other.to_string(),
+    };
+    canon(definition) == canon(incoming)
+}
+
+/// Splits a `PMDGNG3:EVT_...` / `PMDG777:...` target into (prefix, name).
+pub fn pmdg_target(target: &str) -> Option<(&str, &str)> {
+    let (prefix, name) = super::evaluator::split_data_prefix(target.trim())?;
+    crate::pmdg::PmdgFamily::from_profile_prefix(prefix).map(|_| (prefix, name.trim()))
+}
+
+/// True if any action or condition in the profile targets a PMDG data provider.
+pub fn uses_pmdg(profile: &SpadProfile) -> bool {
+    profile.devices.iter().flat_map(|d| &d.items).flat_map(|d| &d.pages).any(|page| {
+        page.events.iter().flat_map(|e| &e.items).flat_map(|e| e.event_definitions.iter().flat_map(|d| &d.items)).any(|def| {
+            def.actions.iter().flat_map(|a| &a.items).any(|a| match a {
+                EventActionItem::Control(c) => pmdg_target(&c.target).is_some(),
+                EventActionItem::DisplayValue(d) => d.target.as_deref().and_then(pmdg_target).is_some(),
+                _ => false,
+            }) || def.conditions.iter().flat_map(|c| &c.items).any(|c| match c {
+                EventConditionItem::Simple(s) => pmdg_target(&s.target).is_some(),
+                _ => false,
+            })
+        })
+    })
+}
+
+/// Every SimVar referenced by conditions, value changes and displays in the profile.
+pub fn collect_simvar_refs(profile: &SpadProfile) -> Vec<String> {
+    use crate::simconnect::simvars::is_simvar_name;
+    let mut out = std::collections::BTreeSet::new();
+    let mut consider = |target: &str| {
+        if let Some((prefix, name)) = super::evaluator::split_data_prefix(target.trim()) {
+            if (prefix.eq_ignore_ascii_case("SIMCONNECT") || prefix.eq_ignore_ascii_case("MSFS")) && is_simvar_name(name) {
+                if let Some(r) = crate::simconnect::simvars::SimVarRef::parse(name) {
+                    out.insert(r.key);
+                }
+            }
+        }
+    };
+    for dev in profile.devices.iter().flat_map(|d| &d.items) {
+        for page in &dev.pages {
+            for ev in page.events.iter().flat_map(|e| &e.items) {
+                for def in ev.event_definitions.iter().flat_map(|d| &d.items) {
+                    for cond in def.conditions.iter().flat_map(|c| &c.items) {
+                        if let EventConditionItem::Simple(s) = cond {
+                            consider(&s.target);
+                        }
+                    }
+                    for act in def.actions.iter().flat_map(|a| &a.items) {
+                        match act {
+                            EventActionItem::ChangeValue(c) => consider(&c.target),
+                            EventActionItem::DisplayValue(d) => {
+                                if let Some(t) = &d.target {
+                                    consider(t);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+
+/// Extracts the sim event name from a profile target such as `SIMCONNECT:AP_MASTER`.
+/// Returns `None` for targets handled elsewhere (LVAR:, LOCAL:, ...).
+pub fn sim_event_name(target: &str) -> Option<&str> {
+    let target = target.trim();
+    if let Some((prefix, rest)) = target.split_once(':') {
+        if prefix.eq_ignore_ascii_case("SIMCONNECT") || prefix.eq_ignore_ascii_case("MSFS") || prefix.eq_ignore_ascii_case("K") {
+            let rest = rest.trim();
+            // `SIMCONNECT:AUTOPILOT MASTER` is a SimVar, not an event.
+            return (!rest.is_empty() && !crate::simconnect::simvars::is_simvar_name(rest)).then_some(rest);
+        }
+        return None;
+    }
+    (!target.is_empty()).then_some(target)
+}
+
+/// Parses an event parameter; accepts signed and fractional values (sent as two's complement).
+fn parse_event_value(v: Option<&str>) -> u32 {
+    let Some(v) = v.map(str::trim).filter(|v| !v.is_empty()) else { return 0 };
+    if let Ok(i) = v.parse::<i64>() {
+        return i as u32;
+    }
+    v.parse::<f64>().map(|f| f.round() as i64 as u32).unwrap_or(0)
+}
+
+fn option_is_true(opts: Option<&ProfileOptionsList>, key: &str) -> bool {
+    opts.map(|o| {
+        o.items.iter().any(|opt| {
+            opt.key.eq_ignore_ascii_case(key)
+                && opt.value.as_deref().map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false)
+        })
+    })
+    .unwrap_or(false)
+}
+
+/// Hardware position in `0.0..=1.0` (min end = 0, max end = 1).
+pub fn axis_position(raw: i32, min: i32, max: i32) -> f64 {
+    let (lo, hi) = (min.min(max) as f64, min.max(max) as f64);
+    if hi <= lo {
+        return 0.0;
+    }
+    ((raw as f64 - lo) / (hi - lo)).clamp(0.0, 1.0)
+}
+
+/// Value range a sim event expects.
+///
+/// All `AXIS_*` / `*_AXIS_SET_EX1` events span -16383..16383 (for throttles, -16383 is idle);
+/// the legacy `*_SET` events for centred controls are bipolar too, the rest are 0..16383.
+pub fn sim_axis_range(event_name: &str) -> (i32, i32) {
+    let e = event_name.to_ascii_uppercase();
+    let bipolar_legacy = matches!(
+        e.as_str(),
+        "AILERON_SET" | "ELEVATOR_SET" | "RUDDER_SET" | "ELEVATOR_TRIM_SET" | "AILERON_TRIM_SET" | "RUDDER_TRIM_SET"
+    );
+    if e.contains("AXIS") || bipolar_legacy {
+        (-16383, 16383)
+    } else {
+        (0, 16383)
+    }
+}
+
+pub fn scale_axis(position: f64, (lo, hi): (i32, i32)) -> i32 {
+    (lo as f64 + position.clamp(0.0, 1.0) * (hi - lo) as f64).round() as i32
 }

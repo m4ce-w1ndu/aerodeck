@@ -40,12 +40,9 @@ impl ProfileParser {
             }
         }
 
-        // If migration upgraded an older file, create a .bak backup if not already present
+        // Upgrades happen in memory only; reading a profile never writes to disk.
         if needs_migration {
-            let bak_path = p.with_extension("xml.bak");
-            if !bak_path.exists() {
-                let _ = fs::copy(p, &bak_path);
-            }
+            tracing::debug!("Profile {:?} upgraded in memory (missing name, version or pages)", p);
         }
 
         Ok(prof)

@@ -2,3 +2,5 @@
 spad_account.conf
 aircraft_assignments.json
 *.bak
+profiles_backup_*/
+spad_cache/

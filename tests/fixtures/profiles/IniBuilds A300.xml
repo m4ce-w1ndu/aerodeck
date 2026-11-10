@@ -1,0 +1,422 @@
+<Profile xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" Version="2" xmlns="http://www.fsgs.com/SPAD">
+  <Devices>
+    <Device VendorID="0x044F" ProductID="0x0407" DevicePath="\\?\hid#vid_044f&amp;pid_0407#9&amp;123c20af&amp;0&amp;0000#{4d1e55b2-f16f-11cf-88cb-001111000030}" Serial="" DeviceIndex="0" Version="3">
+      <DevicePage ID="72c73483-060e-4a22-94be-a6d0c6e32179" IsDefaultPage="true" Name="Default">
+        <Events>
+          <Event BoundTo="Z_AXIS">
+            <EventDefinitions>
+              <EventDefinition Trigger="VALUE">
+                <EventActions>
+                  <EventActionRangedAxis ConfigID="LEVER_FLAPS">
+                    <Options>
+                      <Option Key="USERAWVALUE" Value="True" />
+                      <Option Key="MAX" Value="65535" />
+                      <Option Key="MIN" Value="0" />
+                    </Options>
+                  </EventActionRangedAxis>
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="BUTTON_17">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESSSHORT">
+                <EventActions>
+                  <EventActionControl TargetDataDefinition="SIMCONNECT:RUDDER_TRIM_SET" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="RUDDERTRIM">
+            <EventDefinitions>
+              <EventDefinition Trigger="SCRIPT" ConditionRepeat="true">
+                <EventConditions>
+                  <EventCondition ConditionTargetValue="1" ConditionValueSource="LOCAL:JOY_0X044F0X0407_BUTTON_19" />
+                </EventConditions>
+                <EventActions>
+                  <EventActionControl TargetDataDefinition="SIMCONNECT:RUDDER_TRIM_RIGHT" />
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="SCRIPT" ConditionRepeat="true">
+                <EventConditions>
+                  <EventCondition ConditionTargetValue="1" ConditionValueSource="LOCAL:JOY_0X044F0X0407_BUTTON_18" />
+                </EventConditions>
+                <EventActions>
+                  <EventActionControl TargetDataDefinition="SIMCONNECT:RUDDER_TRIM_LEFT" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="BUTTON_20">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESS">
+                <EventConditions>
+                  <EventCondition ConditionTargetValue="0" ConditionValueSource="SIMCONNECT:BRAKE PARKING POSITION" />
+                </EventConditions>
+                <EventActions>
+                  <EventActionControl TargetDataDefinition="SIMCONNECT:PARKING_BRAKES" />
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="RELEASE">
+                <EventConditions>
+                  <EventCondition ConditionTargetValue="1" ConditionValueSource="SIMCONNECT:BRAKE PARKING POSITION" />
+                </EventConditions>
+                <EventActions>
+                  <EventActionControl TargetDataDefinition="SIMCONNECT:PARKING_BRAKES" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="BUTTON_21">
+            <EventDefinitions>
+              <EventDefinition Trigger="RELEASE">
+                <EventConditions>
+                  <EventCondition ConditionTargetValue="0" ConditionValueSource="LVAR:A310_GEAR_HANDLE_STATUS" />
+                </EventConditions>
+                <EventActions>
+                  <EventActionChangeValue TargetDataDefinition="LVAR:A310_GEAR_HANDLE_STATUS" Value="1" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="AUTOBRAKE">
+            <EventDefinitions>
+              <EventDefinition Trigger="MODE_ABRK_DISARM">
+                <EventActions>
+                  <EventActionChangeValue TargetDataDefinition="LVAR:A310_AUTOBRAKE_LEVEL" Value="3" />
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="MODE_ABRK_LO">
+                <EventActions>
+                  <EventActionChangeValue TargetDataDefinition="LVAR:A310_AUTOBRAKE_LEVEL" Value="1" />
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="MODE_ABRK_2">
+                <EventActions>
+                  <EventActionChangeValue TargetDataDefinition="LVAR:A310_AUTOBRAKE_LEVEL" Value="2" />
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="MODE_ABRK_HI">
+                <EventActions>
+                  <EventActionChangeValue TargetDataDefinition="LVAR:A310_AUTOBRAKE_LEVEL" Value="3" />
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="MODE_ABRK_BTV">
+                <EventActions>
+                  <EventActionChangeValue TargetDataDefinition="LVAR:A310_AUTOBRAKE_LEVEL" Value="0" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="RZ_AXIS">
+            <EventDefinitions>
+              <EventDefinition Trigger="VALUE">
+                <EventActions>
+                  <EventActionCustomAxis TargetDataDefinition="SIMCONNECT:AXIS_SPOILER_SET" Value="0">
+                    <Options>
+                      <Option Key="ALWAYSACTIVE" Value="False" />
+                      <Option Key="USERAWVALUE" Value="True" />
+                      <Option Key="RANGEFROM" Value="16385" />
+                      <Option Key="RANGETO" Value="65535" />
+                      <Option Key="USEMAPPING" Value="True" />
+                      <Option Key="USETRIGGERVALUE" Value="True" />
+                      <Option Key="MAPTO" Value="16385" />
+                      <Option Key="MAPFROM" Value="-16385" />
+                    </Options>
+                  </EventActionCustomAxis>
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="VALUE">
+                <EventActions>
+                  <EventActionCustomAxis TargetDataDefinition="SIMCONNECT:AXIS_SPOILER_SET" Value="-16385">
+                    <Options>
+                      <Option Key="ALWAYSACTIVE" Value="False" />
+                      <Option Key="USERAWVALUE" Value="True" />
+                      <Option Key="RANGEFROM" Value="1" />
+                      <Option Key="RANGETO" Value="16384" />
+                      <Option Key="USEMAPPING" Value="False" />
+                      <Option Key="USETRIGGERVALUE" Value="False" />
+                      <Option Key="MAPTO" Value="16385" />
+                      <Option Key="MAPFROM" Value="-16385" />
+                    </Options>
+                  </EventActionCustomAxis>
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="VALUE">
+                <EventActions>
+                  <EventActionCustomAxis TargetDataDefinition="SIMCONNECT:SPOILERS_ARM_ON" Value="">
+                    <Options>
+                      <Option Key="ALWAYSACTIVE" Value="False" />
+                      <Option Key="USERAWVALUE" Value="True" />
+                      <Option Key="RANGEFROM" Value="0" />
+                      <Option Key="RANGETO" Value="8192" />
+                      <Option Key="USEMAPPING" Value="False" />
+                      <Option Key="USETRIGGERVALUE" Value="False" />
+                      <Option Key="MAPTO" Value="16385" />
+                      <Option Key="MAPFROM" Value="-16385" />
+                    </Options>
+                  </EventActionCustomAxis>
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="VALUE">
+                <EventActions>
+                  <EventActionCustomAxis TargetDataDefinition="SIMCONNECT:SPOILERS_ARM_OFF" Value="">
+                    <Options>
+                      <Option Key="ALWAYSACTIVE" Value="False" />
+                      <Option Key="USERAWVALUE" Value="True" />
+                      <Option Key="RANGEFROM" Value="8193" />
+                      <Option Key="RANGETO" Value="16384" />
+                      <Option Key="USEMAPPING" Value="False" />
+                      <Option Key="USETRIGGERVALUE" Value="False" />
+                      <Option Key="MAPTO" Value="16385" />
+                      <Option Key="MAPFROM" Value="-16385" />
+                    </Options>
+                  </EventActionCustomAxis>
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="ENGINEMODE">
+            <EventDefinitions>
+              <EventDefinition Trigger="MODE_CRANK">
+                <EventActions>
+                  <EventActionChangeValue TargetDataDefinition="LVAR:S_ENG_MODE" Value="0" />
+                  <EventActionChangeValue TargetDataDefinition="LVAR:INI_eng_ignition_switch" Value="4" />
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="MODE_NORM">
+                <EventActions>
+                  <EventActionChangeValue TargetDataDefinition="LVAR:INI_eng_ignition_switch" Value="3" />
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="MODE_IGNITION">
+                <EventActions>
+                  <EventActionChangeValue TargetDataDefinition="LVAR:INI_eng_ignition_switch" Value="1" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="BUTTON_3">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESS">
+                <EventConditions>
+                  <EventCondition ConditionTargetValue="0" ConditionValueSource="LVAR:INI_MIXTURE_RATIO1_HANDLE" />
+                </EventConditions>
+                <EventActions>
+                  <EventActionChangeValue TargetDataDefinition="LVAR:INI_ENG1_MIXTURE_COMMAND" Value="1" />
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="RELEASE">
+                <EventConditions>
+                  <EventCondition ConditionTargetValue="1" ConditionValueSource="LVAR:INI_MIXTURE_RATIO1_HANDLE" />
+                </EventConditions>
+                <EventActions>
+                  <EventActionChangeValue TargetDataDefinition="LVAR:INI_ENG1_MIXTURE_COMMAND" Value="1" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="BUTTON_4">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESS">
+                <EventConditions>
+                  <EventCondition ConditionTargetValue="0" ConditionValueSource="LVAR:INI_MIXTURE_RATIO2_HANDLE" />
+                </EventConditions>
+                <EventActions>
+                  <EventActionChangeValue TargetDataDefinition="LVAR:INI_ENG2_MIXTURE_COMMAND" Value="1" />
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="RELEASE">
+                <EventConditions>
+                  <EventCondition ConditionTargetValue="1" ConditionValueSource="LVAR:INI_MIXTURE_RATIO2_HANDLE" />
+                </EventConditions>
+                <EventActions>
+                  <EventActionChangeValue TargetDataDefinition="LVAR:INI_ENG2_MIXTURE_COMMAND" Value="1" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="BUTTON_5">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESS">
+                <EventConditions>
+                  <EventCondition ConditionComparator="Range" ConditionTargetValue="0,1" ConditionValueSource="LVAR:INI_eng_ignition_switch" />
+                </EventConditions>
+                <EventActions>
+                  <EventActionChangeValue TargetDataDefinition="LVAR:INI_ENG1_STARTER" Value="1" ValueOperation="Increment">
+                    <Options>
+                      <Option Key="HASMINMAX" Value="True" />
+                      <Option Key="VALUEMAX" Value="1" />
+                      <Option Key="ROLLOVER" Value="True" />
+                    </Options>
+                  </EventActionChangeValue>
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="BUTTON_6">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESS">
+                <EventConditions>
+                  <EventCondition ConditionComparator="Range" ConditionTargetValue="0,1" ConditionValueSource="LVAR:INI_eng_ignition_switch" />
+                </EventConditions>
+                <EventActions>
+                  <EventActionChangeValue TargetDataDefinition="LVAR:INI_ENG2_STARTER" Value="1" ValueOperation="Increment">
+                    <Options>
+                      <Option Key="HASMINMAX" Value="True" />
+                      <Option Key="VALUEMAX" Value="1" />
+                      <Option Key="ROLLOVER" Value="True" />
+                    </Options>
+                  </EventActionChangeValue>
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="X_AXIS">
+            <EventDefinitions>
+              <EventDefinition Trigger="VALUE">
+                <EventActions>
+                  <EventActionCustomAxis TargetDataDefinition="SIMCONNECT:THROTTLE1_AXIS_SET_EX1" Value="0">
+                    <Options>
+                      <Option Key="USETRIGGERVALUE" Value="True" />
+                      <Option Key="USERAWVALUE" Value="True" />
+                      <Option Key="INVERTAXIS" Value="True" />
+                      <Option Key="USEMAPPING" Value="True" />
+                      <Option Key="MAPTO" Value="16383" />
+                      <Option Key="ALWAYSACTIVE" Value="False" />
+                      <Option Key="MAPFROM" Value="-16383" />
+                      <Option Key="RANGEFROM" Value="0" />
+                      <Option Key="RANGETO" Value="65535" />
+                    </Options>
+                  </EventActionCustomAxis>
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="PRESSSHORT">
+                <EventActions>
+                  <EventActionControl TargetDataDefinition="SIMCONNECT:AUTO_THROTTLE_DISCONNECT" />
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="PRESSLONG">
+                <EventActions>
+                  <EventActionControl TargetDataDefinition="SIMCONNECT:AUTO_THROTTLE_TO_GA" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="Y_AXIS">
+            <EventDefinitions>
+              <EventDefinition Trigger="VALUE">
+                <EventActions>
+                  <EventActionCustomAxis TargetDataDefinition="SIMCONNECT:THROTTLE2_AXIS_SET_EX1" Value="0">
+                    <Options>
+                      <Option Key="USETRIGGERVALUE" Value="True" />
+                      <Option Key="USERAWVALUE" Value="True" />
+                      <Option Key="INVERTAXIS" Value="True" />
+                      <Option Key="USEMAPPING" Value="True" />
+                      <Option Key="MAPTO" Value="16383" />
+                      <Option Key="ALWAYSACTIVE" Value="False" />
+                      <Option Key="MAPFROM" Value="-16383" />
+                      <Option Key="RANGEFROM" Value="0" />
+                      <Option Key="RANGETO" Value="65535" />
+                    </Options>
+                  </EventActionCustomAxis>
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="PRESSSHORT">
+                <EventActions>
+                  <EventActionControl TargetDataDefinition="SIMCONNECT:AUTO_THROTTLE_DISCONNECT" />
+                </EventActions>
+              </EventDefinition>
+              <EventDefinition Trigger="PRESSLONG">
+                <EventActions>
+                  <EventActionControl TargetDataDefinition="SIMCONNECT:AUTO_THROTTLE_TO_GA" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+        </Events>
+        <Extensions />
+      </DevicePage>
+      <Events />
+      <Extensions />
+    </Device>
+    <Device VendorID="0x044F" ProductID="0x0405" DevicePath="\\?\hid#vid_044f&amp;pid_0405#a&amp;e7c901f&amp;0&amp;0000#{4d1e55b2-f16f-11cf-88cb-001111000030}" Serial="" DeviceIndex="0" Version="3">
+      <DevicePage ID="72c73483-060e-4a22-94be-a6d0c6e32179" IsDefaultPage="true" Name="Default">
+        <Events>
+          <Event BoundTo="BUTTON_8">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESS">
+                <EventActions>
+                  <EventActionControl TargetDataDefinition="SIMCONNECT:PARKING_BRAKES" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="HATSWITCH_0">
+            <EventDefinitions>
+              <EventDefinition Trigger="POV_NORTH_HELD">
+                <EventActions>
+                  <EventActionControl TargetDataDefinition="SIMCONNECT:ELEV_TRIM_DN" />
+                </EventActions>
+                <Options>
+                  <Option Key="HELD_THRESHOLD" Value="10" />
+                </Options>
+              </EventDefinition>
+              <EventDefinition Trigger="POV_SOUTH_HELD">
+                <EventActions>
+                  <EventActionControl TargetDataDefinition="SIMCONNECT:ELEV_TRIM_UP" />
+                </EventActions>
+                <Options>
+                  <Option Key="HELD_THRESHOLD" Value="10" />
+                </Options>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="BUTTON_4">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESS" IsFinal="true">
+                <EventActions>
+                  <EventActionControl TargetDataDefinition="SIMCONNECT:AUTOPILOT_OFF" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="BUTTON_2">
+            <EventDefinitions>
+              <EventDefinition Trigger="HELD" IsFinal="true">
+                <EventActions>
+                  <EventActionControl TargetDataDefinition="SIMCONNECT:BRAKES" />
+                </EventActions>
+                <Options>
+                  <Option Key="HELD_THRESHOLD" Value="10" />
+                </Options>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+        </Events>
+        <Extensions />
+      </DevicePage>
+      <Events />
+      <Extensions />
+    </Device>
+  </Devices>
+  <Options>
+    <Option Key="Saitek.BIP.EnableVirtualPower" Value="True" />
+    <Option Key="Saitek.BIP.Brightness" Value="50" />
+    <Option Key="Saitek.FIP.EnableVirtualPower" Value="True" />
+    <Option Key="Saitek.FIP.DefaultPagingButtons" Value="True" />
+    <Option Key="Saitek.FIP.PagingButtonsOn" Value="True" />
+    <Option Key="Saitek.RadioPanel.EnableVirtualPower" Value="True" />
+    <Option Key="Saitek.SwitchPanel.RaiseOnFirst" Value="False" />
+    <Option Key="Saitek.SwitchPanel.SwapRL" Value="True" />
+    <Option Key="Saitek.SwitchPanel.EnableVirtualPower" Value="True" />
+    <Option Key="Saitek.TrimWheel.ReverseTrim" Value="True" />
+    <Option Key="Ultimarc.PacDrive.EnableVirtualPower" Value="True" />
+    <Option Key="Ultimarc.PacLed64.EnableVirtualPower" Value="True" />
+    <Option Key="Ultimarc.PacLed64.Brightness" Value="128" />
+  </Options>
+  <ProfileInformation ProfileID="9111863a-3e5f-4b04-a55b-c3c49718fa5f" Version="0.21">
+    <Description />
+    <LastChanged>2024-06-20T21:50:56.0133784+02:00</LastChanged>
+  </ProfileInformation>
+</Profile>

@@ -1,4 +1,5 @@
 pub mod presets;
+pub mod sim_events;
 pub mod backend;
 pub mod views;
 pub mod app;
@@ -21,8 +22,8 @@ pub fn run_gui(profile_path: Option<PathBuf>, simconnect_host: String, simconnec
     let (cmd_tx, event_rx) = start_backend(profile_path.clone(), simconnect_host.clone(), simconnect_port);
 
     let mut viewport = eframe::egui::ViewportBuilder::default()
-        .with_inner_size([1280.0, 840.0])
-        .with_min_inner_size([960.0, 600.0])
+        .with_inner_size([1480.0, 940.0])
+        .with_min_inner_size([1024.0, 680.0])
         .with_title("AeroDeck - Flight Controller & Telemetry Suite")
         .with_app_id("aerodeck");
 
@@ -41,6 +42,7 @@ pub fn run_gui(profile_path: Option<PathBuf>, simconnect_host: String, simconnec
         Box::new(move |cc| {
             // Apply AeroDeck glass-cockpit theme
             let theme = AeroTheme::dark();
+            crate::gui::theme::install_fonts(&cc.egui_ctx);
             theme.apply(&cc.egui_ctx);
 
             Ok(Box::new(SpadLinxApp::new(

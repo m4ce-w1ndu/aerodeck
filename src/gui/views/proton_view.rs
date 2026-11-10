@@ -289,7 +289,7 @@ pub fn render_proton_view(
                     ui.label(RichText::new("✔ Proton Wine Runtime:").color(Color32::from_rgb(0, 230, 255)).small());
                     ui.label(RichText::new(wb.to_string_lossy()).monospace().small());
                 }
-                if ui.small_button("🧪 Self-Test Wine Named-Pipe Bridge").clicked() {
+                if ui.small_button("🔬 Self-Test Wine Named-Pipe Bridge").clicked() {
                     match ProtonConfigurator::run_pipe_bridge_self_test(custom_opt.clone()) {
                         Ok(msg) => state.status_message = Some(format!("Success! {}", msg)),
                         Err(e) => state.status_message = Some(format!("Error: {}", e)),

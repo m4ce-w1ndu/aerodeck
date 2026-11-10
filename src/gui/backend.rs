@@ -8,7 +8,7 @@ use tracing::trace;
 
 use crate::bridge::{SpadLvarBridge, CALC_RET_DOUBLE};
 use crate::hardware::device::DeviceEvent;
-use crate::hardware::enumerator::{ConnectedDevice, DeviceEnumerator};
+use crate::hardware::enumerator::{ConnectedDevice, DeviceEnumerator, HardwareInput};
 use crate::profile::{
     AircraftAssignmentManager, AircraftScanner, DiscoveredAircraft, OnlineSpadProfileEntry,
     ProfileExecutor, ProfileParser, ProfileRepository, SpadAccountConfig, SpadProfile,
@@ -50,11 +50,24 @@ pub enum GuiEvent {
         time: Instant,
     },
     LvarsDiscovered(Vec<String>),
+    /// Subscribed SimVars with their last value (None until the sim sends one).
+    SimVarsUpdated(Vec<(String, Option<f64>)>),
+    PmdgStatus(Vec<PmdgUiStatus>),
     LvarUpdated { name: String, value: f64 },
     Log { timestamp: String, level: String, text: String },
     ProfileLoaded { name: String, path: String },
     ProfileSaved { path: String },
     Error(String),
+}
+
+/// One installed PMDG package, for the variables view.
+#[derive(Debug, Clone)]
+pub struct PmdgUiStatus {
+    pub label: String,
+    pub package: String,
+    pub broadcast_enabled: bool,
+    /// Cockpit data is arriving over SimConnect right now.
+    pub receiving: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -71,7 +84,11 @@ pub enum GuiCommand {
     DisconnectSimConnect,
     FireSimConnectEvent { event_name: String, value: u32 },
     FireAxisEvent { event_name: String, value: i32 },
+    FirePmdgEvent { prefix: String, name: String, parameter: u32 },
     SetLvar { name: String, value: f64 },
+    WatchSimVar { name: String },
+    EnablePmdgBroadcast,
+    SetSimVar { name: String, value: f64 },
     ExecCalculatorCode { code: String },
     RequestLvarScan,
     RescanDevices,
@@ -195,8 +212,9 @@ async fn run_backend_loop(
         }
     }
 
-    // 2. Ensure Built-in Categorized Device & Aircraft Profiles are installed in ./profiles/
-    ProfileRepository::ensure_builtin_profiles_on_disk();
+    // 2. Import Windows SPAD.neXt profiles not yet present (built-in profiles are only
+    //    installed on demand from the repository, never recreated on startup).
+    let _ = std::fs::create_dir_all("profiles");
     let imported_win = ProfileRepository::auto_import_windows_profiles_on_startup(None);
     if imported_win > 0 {
         let _ = event_tx.send(GuiEvent::Log {
@@ -235,7 +253,7 @@ async fn run_backend_loop(
     let mut assignments = AircraftAssignmentManager::load_or_default();
     if assignments.assignments.is_empty() {
         assignments.import_from_xml_profiles();
-        if assignments.default_profile.is_none() {
+        if assignments.default_profile.is_none() && std::path::Path::new("profiles/cessna_ga_winwing_tca.xml").exists() {
             assignments.default_profile = Some("profiles/cessna_ga_winwing_tca.xml".to_string());
         }
         let _ = assignments.save();
@@ -271,10 +289,16 @@ async fn run_backend_loop(
     // Initial device enumeration and listener startup
     let devices = DeviceEnumerator::enumerate_all();
     let _ = event_tx.send(GuiEvent::DevicesUpdated(devices.clone()));
-    let shutdown = Arc::new(AtomicBool::new(false));
-    DeviceEnumerator::start_hardware_listeners(&devices, event_tx.clone(), shutdown.clone());
+    let mut shutdown = Arc::new(AtomicBool::new(false));
+    let (hw_tx, mut hw_rx) = mpsc::unbounded_channel::<HardwareInput>();
+    DeviceEnumerator::start_hardware_listeners(&devices, event_tx.clone(), Some(hw_tx.clone()), shutdown.clone());
 
     let (sc_disconnect_tx, mut sc_disconnect_rx) = mpsc::channel::<()>(8);
+    let mut last_no_executor_warning: Option<Instant> = None;
+    let mut pmdg_installed = tokio::task::spawn_blocking(crate::pmdg::discover_installed).await.unwrap_or_default();
+    // Load the SDK headers now, off the UI thread (the event picker reads them).
+    let _ = tokio::task::spawn_blocking(crate::pmdg::installed_sdks).await;
+    let mut pmdg_broadcast: Vec<bool> = pmdg_installed.iter().map(|i| crate::pmdg::broadcast_enabled(&i.options_file)).collect();
 
     loop {
         tokio::select! {
@@ -378,12 +402,14 @@ async fn run_backend_loop(
                     }
                     Some(GuiCommand::FireSimConnectEvent { event_name, value }) => {
                         if let Some(ref sc) = simconnect {
-                            let _ = sc.map_client_event_to_sim_event(1, &event_name).await;
-                            let _ = sc.transmit_client_event(0, 1, value).await;
+                            let (level, text) = match sc.transmit_event(&event_name, value).await {
+                                Ok(()) => ("ACTION", format!("Dispatched SimConnect Event: {} (val: {})", event_name, value as i32)),
+                                Err(e) => ("WARN", format!("Failed to send SimConnect Event {}: {}", event_name, e)),
+                            };
                             let _ = event_tx.send(GuiEvent::Log {
                                 timestamp: chrono_now(),
-                                level: "ACTION".to_string(),
-                                text: format!("Dispatched SimConnect Event: {} (val: {})", event_name, value),
+                                level: level.to_string(),
+                                text,
                             });
                         } else {
                             let _ = event_tx.send(GuiEvent::Log {
@@ -393,11 +419,56 @@ async fn run_backend_loop(
                             });
                         }
                     }
+                    Some(GuiCommand::FirePmdgEvent { prefix, name, parameter }) => {
+                        let (level, text) = match simconnect {
+                            Some(ref sc) => match sc.transmit_pmdg_event(&prefix, &name, parameter).await {
+                                Ok(()) => ("ACTION", format!("Sent PMDG event {}:{} ({})", prefix, name, parameter)),
+                                Err(e) => ("WARN", format!("PMDG event {}:{} failed: {}", prefix, name, e)),
+                            },
+                            None => ("WARN", format!("Cannot send {}:{}: SimConnect not connected", prefix, name)),
+                        };
+                        let _ = event_tx.send(GuiEvent::Log { timestamp: chrono_now(), level: level.to_string(), text });
+                    }
                     Some(GuiCommand::FireAxisEvent { event_name, value }) => {
                         if let Some(ref sc) = simconnect {
-                            let _ = sc.map_client_event_to_sim_event(2, &event_name).await;
-                            let _ = sc.transmit_client_event(0, 2, value as u32).await;
+                            let _ = sc.transmit_event(&event_name, value as u32).await;
                             trace!("Dispatched SimConnect Axis: {} = {}", event_name, value);
+                        }
+                    }
+                    Some(GuiCommand::EnablePmdgBroadcast) => {
+                        pmdg_installed = tokio::task::spawn_blocking(crate::pmdg::discover_installed).await.unwrap_or_default();
+                        for inst in &pmdg_installed {
+                            let (level, text) = match crate::pmdg::enable_broadcast(&inst.options_file) {
+                                Ok(true) => ("INFO", format!("{} ({}): data broadcast enabled, reload the aircraft in MSFS to apply", inst.family.label(), inst.package)),
+                                Ok(false) => ("INFO", format!("{} ({}): data broadcast already enabled", inst.family.label(), inst.package)),
+                                Err(e) => ("WARN", format!("{} ({}): {:#}", inst.family.label(), inst.package, e)),
+                            };
+                            let _ = event_tx.send(GuiEvent::Log { timestamp: chrono_now(), level: level.to_string(), text });
+                        }
+                        pmdg_broadcast = pmdg_installed.iter().map(|i| crate::pmdg::broadcast_enabled(&i.options_file)).collect();
+                    }
+                    Some(GuiCommand::WatchSimVar { name }) => {
+                        if let Some(ref sc) = simconnect {
+                            let (level, text) = match sc.subscribe_simvar(&name).await {
+                                Ok(key) => ("INFO", format!("Watching SimVar '{}'", key)),
+                                Err(e) => ("WARN", format!("Cannot watch SimVar '{}': {}", name, e)),
+                            };
+                            let _ = event_tx.send(GuiEvent::Log { timestamp: chrono_now(), level: level.to_string(), text });
+                        } else {
+                            let _ = event_tx.send(GuiEvent::Log {
+                                timestamp: chrono_now(),
+                                level: "WARN".to_string(),
+                                text: format!("Cannot watch SimVar '{}': SimConnect not connected", name),
+                            });
+                        }
+                    }
+                    Some(GuiCommand::SetSimVar { name, value }) => {
+                        if let Some(ref sc) = simconnect {
+                            let (level, text) = match sc.set_simvar(&name, value).await {
+                                Ok(()) => ("ACTION", format!("Set SimVar '{}' = {}", name, value)),
+                                Err(e) => ("WARN", format!("Cannot set SimVar '{}': {}", name, e)),
+                            };
+                            let _ = event_tx.send(GuiEvent::Log { timestamp: chrono_now(), level: level.to_string(), text });
                         }
                     }
                     Some(GuiCommand::SetLvar { name, value }) => {
@@ -449,9 +520,12 @@ async fn run_backend_loop(
                         }
                     }
                     Some(GuiCommand::RescanDevices) => {
+                        // Stop the previous listeners first, otherwise every rescan duplicates each input.
+                        shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+                        shutdown = Arc::new(AtomicBool::new(false));
                         let devs = DeviceEnumerator::enumerate_all();
                         let _ = event_tx.send(GuiEvent::DevicesUpdated(devs.clone()));
-                        DeviceEnumerator::start_hardware_listeners(&devs, event_tx.clone(), shutdown.clone());
+                        DeviceEnumerator::start_hardware_listeners(&devs, event_tx.clone(), Some(hw_tx.clone()), shutdown.clone());
                     }
                     Some(GuiCommand::RescanAircrafts { custom_prefix }) => {
                         discovered_aircrafts = AircraftScanner::discover_installed_aircraft(custom_prefix);
@@ -720,7 +794,9 @@ async fn run_backend_loop(
                         merge_into_active,
                         target_device,
                     }) => {
-                        match ProfileRepository::import_windows_spad_profile(&source_path) {
+                        // Read the Windows file in place: it becomes a file in ./profiles only for
+                        // a standalone import (see promote_to_local_profile), never for a merge.
+                        match Ok::<std::path::PathBuf, anyhow::Error>(source_path.clone()) {
                             Ok(path) => {
                                 let fallback_name = path
                                     .file_stem()
@@ -856,9 +932,13 @@ async fn run_backend_loop(
 
                         // If executor is running, execute profile mapping
                         if let Some(ref exec) = executor {
+                            if matches!(action.to_lowercase().as_str(), "press" | "release") {
+                                let exec = exec.clone();
+                                let pressed = action.eq_ignore_ascii_case("press");
+                                tokio::spawn(async move { exec.handle_button(&device, &bound_to, "", pressed).await });
+                                continue;
+                            }
                             let dev_ev = match action.to_lowercase().as_str() {
-                                "press" => DeviceEvent::ButtonPress { bound_to: bound_to.clone() },
-                                "release" => DeviceEvent::ButtonRelease { bound_to: bound_to.clone() },
                                 "cw" => DeviceEvent::RotaryTurn { bound_to: bound_to.clone(), clockwise: true },
                                 "ccw" => DeviceEvent::RotaryTurn { bound_to: bound_to.clone(), clockwise: false },
                                 _ => DeviceEvent::SwitchChange { bound_to: bound_to.clone(), state: true },
@@ -908,6 +988,40 @@ async fn run_backend_loop(
                     None => break,
                 }
             }
+            Some(input) = hw_rx.recv() => {
+                let Some(exec) = executor.clone() else {
+                    // Say why moving hardware does nothing, at most every 30 s.
+                    if last_no_executor_warning.is_none_or(|t: Instant| t.elapsed() > Duration::from_secs(30)) {
+                        last_no_executor_warning = Some(Instant::now());
+                        let why = match (&simconnect, &active_profile) {
+                            (None, _) => "SimConnect is not connected",
+                            (_, None) => "no profile is loaded",
+                            _ => "the LVAR bridge failed to start",
+                        };
+                        let _ = event_tx.send(GuiEvent::Log {
+                            timestamp: chrono_now(),
+                            level: "WARN".to_string(),
+                            text: format!("Hardware input is not sent to the simulator: {}", why),
+                        });
+                    }
+                    continue;
+                };
+                match input {
+                    HardwareInput::Axis { device_id, bound_to, raw, min, max } => {
+                        // Inline so successive axis positions are sent in order.
+                        if let Err(e) = exec.dispatch_axis_event(&device_id, &bound_to, raw, min, max).await {
+                            let _ = event_tx.send(GuiEvent::Log { timestamp: chrono_now(), level: "WARN".to_string(), text: format!("Axis {}: {}", bound_to, e) });
+                        }
+                        forward_executor_notices(&exec, &event_tx);
+                    }
+                    HardwareInput::Button { device_id, bound_to, trigger_prefix, pressed } => {
+                        // Spawned: actions may contain delays and must not stall the backend loop.
+                        tokio::spawn(async move {
+                            exec.handle_button(&device_id, &bound_to, &trigger_prefix, pressed).await;
+                        });
+                    }
+                }
+            }
             _ = sc_disconnect_rx.recv() => {
                 if simconnect.is_some() {
                     simconnect = None;
@@ -930,6 +1044,9 @@ async fn run_backend_loop(
             }
             _ = sleep(Duration::from_millis(500)) => {
                 tick_counter = tick_counter.wrapping_add(1);
+                if let Some(ref exec) = executor {
+                    forward_executor_notices(exec, &event_tx);
+                }
 
                 // Unattended background auto-connect when FlightSimulator.exe is detected
                 if simconnect.is_none() && !user_disconnected && tick_counter.is_multiple_of(6) {
@@ -976,6 +1093,34 @@ async fn run_backend_loop(
                             }
                         }
                     }
+
+                if !pmdg_installed.is_empty() {
+                    let live = simconnect.as_ref().map(|sc| sc.pmdg_status()).unwrap_or_default();
+                    let rows = pmdg_installed
+                        .iter()
+                        .zip(&pmdg_broadcast)
+                        .map(|(inst, enabled)| PmdgUiStatus {
+                            label: inst.family.label().to_string(),
+                            package: inst.package.clone(),
+                            broadcast_enabled: *enabled,
+                            receiving: live.iter().any(|s| s.family == inst.family && s.receiving_data),
+                        })
+                        .collect();
+                    let _ = event_tx.send(GuiEvent::PmdgStatus(rows));
+                }
+
+                if let Some(ref sc) = simconnect {
+                    let values = sc.simvar_snapshot();
+                    let list = sc
+                        .subscribed_simvars()
+                        .into_iter()
+                        .map(|k| {
+                            let v = values.get(&k).copied();
+                            (k, v)
+                        })
+                        .collect();
+                    let _ = event_tx.send(GuiEvent::SimVarsUpdated(list));
+                }
 
                 // Periodic bridge check, live values, and aircraft name update
                 if let Some(ref br) = bridge {
@@ -1180,7 +1325,9 @@ async fn apply_imported_or_merged_profile(
             }
         }
 
-        let summary = base_prof.merge_from_profile(&incoming_prof, target_tuple, true);
+        let summary = // Additive: the snippet replaces only the inputs it defines; other bindings on the
+        // device (e.g. calibrated throttle levers) are kept.
+        base_prof.merge_from_profile(&incoming_prof, target_tuple, false);
         let _ = ProfileParser::save_file(&dest_path, &base_prof);
 
         let _ = event_tx.send(GuiEvent::Log {
@@ -1198,10 +1345,18 @@ async fn apply_imported_or_merged_profile(
 
         (base_prof, dest_path)
     } else {
-        // Standalone import, but if a target_device was explicitly selected, ensure its VID:PID is bound in the profile
+        // Standalone import (explicitly requested): only now does the file become a local profile.
+        let downloaded_path: &std::path::Path = &match ProfileRepository::promote_to_local_profile(downloaded_path) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = event_tx.send(GuiEvent::Error(format!("Cannot save imported profile: {}", e)));
+                return;
+            }
+        };
+        // If a target_device was explicitly selected, ensure its VID:PID is bound in the profile
         if target_tuple.is_some() {
             let orig = incoming_prof.clone();
-            let summary = incoming_prof.merge_from_profile(&orig, target_tuple, true);
+            let summary = incoming_prof.merge_from_profile(&orig, target_tuple, false);
             let _ = ProfileParser::save_file(downloaded_path, &incoming_prof);
             let _ = event_tx.send(GuiEvent::Log {
                 timestamp: chrono_now(),
@@ -1288,6 +1443,14 @@ async fn apply_imported_or_merged_profile(
             name: final_prof_name,
             path: final_path_str,
         });
+    }
+}
+
+/// Moves executor notices (unmapped inputs, first lever/axis use) into the UI log.
+fn forward_executor_notices(exec: &ProfileExecutor, event_tx: &mpsc::UnboundedSender<GuiEvent>) {
+    for text in exec.take_notices() {
+        let level = if text.contains("not mapped") { "WARN" } else { "INFO" };
+        let _ = event_tx.send(GuiEvent::Log { timestamp: chrono_now(), level: level.to_string(), text });
     }
 }
 

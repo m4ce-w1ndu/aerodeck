@@ -180,3 +180,10 @@ impl AeroTheme {
         ctx.set_style(style);
     }
 }
+
+/// Font setup shared by the app and tests. Keeps egui's bundled fonts (Ubuntu Light,
+/// Hack, Noto Emoji, emoji-icon-font); GUI text must only use glyphs they contain,
+/// which `tests/gui_glyph_tests.rs` checks.
+pub fn install_fonts(ctx: &egui::Context) {
+    ctx.set_fonts(egui::FontDefinitions::default());
+}

@@ -183,14 +183,14 @@ pub fn render_virtual_panel_view(
 
             // Trim wheel & Flaps
             ui.label("Trim Wheel:");
-            if ui.button("▲ NOSE UP").clicked() {
+            if ui.button("⏶ NOSE UP").clicked() {
                 let _ = cmd_tx.send(GuiCommand::SimulateInput {
                     device: "multi_panel".to_string(),
                     bound_to: "PITCH_TRIM_UP".to_string(),
                     action: "press".to_string(),
                 });
             }
-            if ui.button("▼ NOSE DN").clicked() {
+            if ui.button("⏷ NOSE DN").clicked() {
                 let _ = cmd_tx.send(GuiCommand::SimulateInput {
                     device: "multi_panel".to_string(),
                     bound_to: "PITCH_TRIM_DOWN".to_string(),
@@ -263,7 +263,7 @@ fn render_toggle_switch(
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<GuiCommand>,
     device: &str,
 ) {
-    let text = if *state { format!("● {}", label) } else { format!("○ {}", label) };
+    let text = if *state { format!("⏺ {}", label) } else { format!("○ {}", label) };
     let color = if *state { Color32::from_rgb(0, 255, 120) } else { Color32::GRAY };
 
     if ui.button(RichText::new(text).color(color)).clicked() {

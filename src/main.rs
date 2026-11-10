@@ -6,6 +6,7 @@ mod profile;
 mod hardware;
 mod proton;
 mod gui;
+mod pmdg;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -80,6 +81,12 @@ enum Commands {
         action: ProtonCommands,
     },
 
+    /// PMDG aircraft SDK (737 / 777): status and data broadcast setup
+    Pmdg {
+        #[command(subcommand)]
+        action: PmdgCommands,
+    },
+
     /// Interactive virtual test session (simulate events without hardware)
     TestVirtual {
         #[arg(short, long)]
@@ -124,6 +131,14 @@ enum BridgeCommands {
 enum DeviceCommands {
     /// Scan USB bus for Saitek / Logitech flight panels
     Scan,
+}
+
+#[derive(Subcommand)]
+enum PmdgCommands {
+    /// Show installed PMDG aircraft, their SDK and whether data broadcast is enabled
+    Status,
+    /// Set `[SDK] EnableDataBroadcast=1` in the options file of every installed PMDG aircraft
+    EnableSdk,
 }
 
 #[derive(Subcommand)]
@@ -210,10 +225,35 @@ async fn run_cli_command(cmd: Commands) -> Result<()> {
 
             let executor = Arc::new(ProfileExecutor::new(prof, sc.clone(), bridge.clone()));
 
+            let devices = hardware::enumerator::DeviceEnumerator::enumerate_all();
+            let (gui_tx, mut gui_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (hw_tx, mut hw_rx) = tokio::sync::mpsc::unbounded_channel();
+            hardware::enumerator::DeviceEnumerator::start_hardware_listeners(
+                &devices,
+                gui_tx,
+                Some(hw_tx),
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            );
+            // GUI display events are not needed headless; drain them.
+            tokio::spawn(async move { while gui_rx.recv().await.is_some() {} });
+
             println!("{} Engine running. Listening for events...", "✈".green().bold());
-            // Keep running
-            loop {
-                sleep(Duration::from_secs(1)).await;
+            while let Some(input) = hw_rx.recv().await {
+                for notice in executor.take_notices() {
+                    println!("{} {}", "ℹ".cyan(), notice);
+                }
+                use hardware::enumerator::HardwareInput;
+                match input {
+                    HardwareInput::Axis { device_id, bound_to, raw, min, max } => {
+                        let _ = executor.dispatch_axis_event(&device_id, &bound_to, raw, min, max).await;
+                    }
+                    HardwareInput::Button { device_id, bound_to, trigger_prefix, pressed } => {
+                        let exec = executor.clone();
+                        tokio::spawn(async move {
+                            exec.handle_button(&device_id, &bound_to, &trigger_prefix, pressed).await;
+                        });
+                    }
+                }
             }
         }
 
@@ -356,6 +396,40 @@ async fn run_cli_command(cmd: Commands) -> Result<()> {
                 }
             }
         },
+
+        Commands::Pmdg { action } => {
+            let installed = pmdg::discover_installed();
+            if installed.is_empty() {
+                println!("{} No PMDG aircraft with an SDK header found in the MSFS packages.", "✖".red().bold());
+                return Ok(());
+            }
+            for inst in installed {
+                let enabled = pmdg::broadcast_enabled(&inst.options_file);
+                match action {
+                    PmdgCommands::Status => {
+                        let sdk = pmdg::PmdgSdk::load(inst.family, &inst.header);
+                        println!("{} {} ({})", "✈".cyan(), inst.family.label().bold(), inst.package);
+                        match sdk {
+                            Ok(s) => println!("    SDK: {} events, {} data fields", s.events.len(), s.fields.len()),
+                            Err(e) => println!("    SDK: {} {:#}", "unreadable:".red(), e),
+                        }
+                        println!(
+                            "    Data broadcast: {}  ({})",
+                            if enabled { "enabled".green() } else { "disabled".yellow() },
+                            inst.options_file.display()
+                        );
+                    }
+                    PmdgCommands::EnableSdk => match pmdg::enable_broadcast(&inst.options_file) {
+                        Ok(true) => println!(
+                            "{} {} ({}): data broadcast enabled. Reload the aircraft in MSFS to apply.",
+                            "✔".green().bold(), inst.family.label(), inst.package
+                        ),
+                        Ok(false) => println!("{} {} ({}): already enabled", "✔".green(), inst.family.label(), inst.package),
+                        Err(e) => println!("{} {} ({}): {:#}", "✖".red().bold(), inst.family.label(), inst.package, e),
+                    },
+                }
+            }
+        }
 
         Commands::TestVirtual { profile } => {
             println!("Testing profile in Virtual Emulator mode: {:?}", profile);

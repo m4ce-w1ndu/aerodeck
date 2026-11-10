@@ -430,7 +430,7 @@ impl AircraftScanner {
         aircraft_list
     }
 
-    fn find_packages_directories(roaming: &Path) -> Vec<(String, PathBuf)> {
+    pub fn find_packages_directories(roaming: &Path) -> Vec<(String, PathBuf)> {
         let mut roots = Vec::new();
         let mut base_packages = roaming.join("Packages");
 

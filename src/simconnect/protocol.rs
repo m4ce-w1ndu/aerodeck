@@ -10,6 +10,8 @@ pub enum SimConnectSendId {
     Open = 1,
     MapClientEventToSimEvent = 4,
     TransmitClientEvent = 5,
+    AddToDataDefinition = 12,
+    ClearDataDefinition = 13,
     SetDataOnSimObject = 16,
     RequestDataOnSimObject = 14,
     SubscribeToSystemEvent = 23,
@@ -33,13 +35,13 @@ pub enum SimConnectRecvId {
     Open = 2,
     Quit = 3,
     Event = 4,
+    EventFilename = 6,
+    EventFrame = 7,
     SimObjectData = 8,
     SimObjectDataByType = 9,
-    ClientData = 18,
-    AssignedObjectId = 19,
-    SystemState = 25,
-    EventFilename = 26,
-    EventFrame = 27,
+    AssignedObjectId = 12,
+    SystemState = 15,
+    ClientData = 16,
     Unknown = 9999,
 }
 
@@ -50,14 +52,15 @@ impl From<u32> for SimConnectRecvId {
             1 => SimConnectRecvId::Exception,
             2 => SimConnectRecvId::Open,
             3 => SimConnectRecvId::Quit,
+            // Values from SIMCONNECT_RECV_ID in SimConnect.h
             4 => SimConnectRecvId::Event,
+            6 => SimConnectRecvId::EventFilename,
+            7 => SimConnectRecvId::EventFrame,
             8 => SimConnectRecvId::SimObjectData,
             9 => SimConnectRecvId::SimObjectDataByType,
-            18 => SimConnectRecvId::ClientData,
-            19 => SimConnectRecvId::AssignedObjectId,
-            25 => SimConnectRecvId::SystemState,
-            26 => SimConnectRecvId::EventFilename,
-            27 => SimConnectRecvId::EventFrame,
+            12 => SimConnectRecvId::AssignedObjectId,
+            15 => SimConnectRecvId::SystemState,
+            16 => SimConnectRecvId::ClientData,
             _ => SimConnectRecvId::Unknown,
         }
     }
@@ -131,13 +134,16 @@ impl RecvOpen {
     }
 }
 
+/// `SIMCONNECT_RECV_CLIENT_DATA`: same layout as `SIMCONNECT_RECV_SIMOBJECT_DATA`.
 #[derive(Debug, Clone)]
 pub struct RecvClientData {
     pub header: RecvHeader,
     pub request_id: u32,
+    pub object_id: u32,
     pub define_id: u32,
     pub flags: u32,
-    pub object_id: u32,
+    pub entry_number: u32,
+    pub out_of: u32,
     pub define_count: u32,
     pub data: Vec<u8>,
 }
@@ -145,23 +151,46 @@ pub struct RecvClientData {
 impl RecvClientData {
     pub fn read_from(header: RecvHeader, cursor: &mut Cursor<&[u8]>) -> io::Result<Self> {
         let request_id = cursor.read_u32::<LittleEndian>()?;
+        let object_id = cursor.read_u32::<LittleEndian>()?;
         let define_id = cursor.read_u32::<LittleEndian>()?;
         let flags = cursor.read_u32::<LittleEndian>()?;
-        let object_id = cursor.read_u32::<LittleEndian>()?;
+        let entry_number = cursor.read_u32::<LittleEndian>()?;
+        let out_of = cursor.read_u32::<LittleEndian>()?;
         let define_count = cursor.read_u32::<LittleEndian>()?;
 
         let mut data = Vec::new();
         cursor.read_to_end(&mut data)?;
 
-        Ok(Self {
-            header,
-            request_id,
-            define_id,
-            flags,
-            object_id,
-            define_count,
-            data,
-        })
+        Ok(Self { header, request_id, object_id, define_id, flags, entry_number, out_of, define_count, data })
+    }
+}
+
+/// `SIMCONNECT_RECV_SIMOBJECT_DATA` (and `_BYTYPE`, which shares the layout).
+#[derive(Debug, Clone)]
+pub struct RecvSimObjectData {
+    pub header: RecvHeader,
+    pub request_id: u32,
+    pub object_id: u32,
+    pub define_id: u32,
+    pub flags: u32,
+    pub entry_number: u32,
+    pub out_of: u32,
+    pub define_count: u32,
+    pub data: Vec<u8>,
+}
+
+impl RecvSimObjectData {
+    pub fn read_from(header: RecvHeader, cursor: &mut Cursor<&[u8]>) -> io::Result<Self> {
+        let request_id = cursor.read_u32::<LittleEndian>()?;
+        let object_id = cursor.read_u32::<LittleEndian>()?;
+        let define_id = cursor.read_u32::<LittleEndian>()?;
+        let flags = cursor.read_u32::<LittleEndian>()?;
+        let entry_number = cursor.read_u32::<LittleEndian>()?;
+        let out_of = cursor.read_u32::<LittleEndian>()?;
+        let define_count = cursor.read_u32::<LittleEndian>()?;
+        let mut data = Vec::new();
+        cursor.read_to_end(&mut data)?;
+        Ok(Self { header, request_id, object_id, define_id, flags, entry_number, out_of, define_count, data })
     }
 }
 
@@ -271,6 +300,7 @@ pub enum SimConnectMessage {
     Open(RecvOpen),
     Quit,
     ClientData(RecvClientData),
+    SimObjectData(RecvSimObjectData),
     Event(RecvEvent),
     SystemState(RecvSystemState),
     EventFilename(RecvEventFilename),

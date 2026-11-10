@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Profile Version="1" IsStockProfile="false">
+  <Name>Boeing 747-8i / 787-10 / 737 — Winwing URSA MINOR L + Thrustmaster TCA</Name>
+  <AssignedAircrafts>
+    <Aircraft Name="Boeing 747-8i Asobo" />
+    <Aircraft Name="Boeing 787-10 Dreamliner Asobo" />
+  </AssignedAircrafts>
+  <Devices>
+    <Device VendorID="0x4098" ProductID="0xBC27" Name="Winwing WINCTRL URSA MINOR 32 Joystick L" ID="evdev_4098_bc27_0">
+      <DevicePage ID="default" IsDefaultPage="true" Name="Boeing Yoke &amp; Controls">
+        <Events>
+          <Event BoundTo="AXIS_X">
+            <EventDefinitions>
+              <EventDefinition Trigger="VALUE_CHANGED">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:AXIS_AILERONS_SET" Value="0:0:0" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="AXIS_Y">
+            <EventDefinitions>
+              <EventDefinition Trigger="VALUE_CHANGED">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:AXIS_ELEVATOR_SET" Value="0:0:0" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="AXIS_RZ">
+            <EventDefinitions>
+              <EventDefinition Trigger="VALUE_CHANGED">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:AXIS_RUDDER_SET" Value="0:0:0" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="BUTTON_2">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESS">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:AUTOPILOT_OFF" Value="1" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="HAT0_UP">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESS">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:ELEV_TRIM_DN" Value="1" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="HAT0_DOWN">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESS">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:ELEV_TRIM_UP" Value="1" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+        </Events>
+      </DevicePage>
+    </Device>
+    <Device VendorID="0x044F" ProductID="0x0407" Name="Thrustmaster TCA Q-Eng 1&amp;2" ID="evdev_044f_0407_0">
+      <DevicePage ID="default" IsDefaultPage="true" Name="Boeing Throttle Quadrant">
+        <Events>
+          <Event BoundTo="AXIS_X">
+            <EventDefinitions>
+              <EventDefinition Trigger="VALUE_CHANGED">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:AXIS_THROTTLE1_SET" Value="0:0:0" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="AXIS_Y">
+            <EventDefinitions>
+              <EventDefinition Trigger="VALUE_CHANGED">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:AXIS_THROTTLE2_SET" Value="0:0:0" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="BUTTON_1">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESS">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:AUTO_THROTTLE_TO_GA" Value="1" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="BUTTON_19">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESS">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:PARKING_BRAKES" Value="1" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+          <Event BoundTo="BUTTON_20">
+            <EventDefinitions>
+              <EventDefinition Trigger="PRESS">
+                <EventActions>
+                  <EventActionControl Target="SIMCONNECT:GEAR_TOGGLE" Value="1" />
+                </EventActions>
+              </EventDefinition>
+            </EventDefinitions>
+          </Event>
+        </Events>
+      </DevicePage>
+    </Device>
+  </Devices>
+</Profile>

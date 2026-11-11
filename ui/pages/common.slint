@@ -1,0 +1,105 @@
+import { Theme, Icons } from "../theme.slint";
+import { Ico, IconTile, Pill, Dot } from "../components/base.slint";
+
+export global Helpers {
+    public pure function device-icon(category: string) -> image {
+        if category == "THROTTLE" { return Icons.lever; }
+        if category == "RUDDER" { return Icons.sliders; }
+        if category == "PANEL" { return Icons.cpu; }
+        if category == "VIRTUAL" { return Icons.cpu; }
+        if category == "JOYSTICK" { return Icons.crosshair; }
+        return Icons.gamepad;
+    }
+}
+
+export component StatTile inherits Rectangle {
+    in property <image> icon;
+    in property <string> caption;
+    in property <string> value;
+    in property <string> detail;
+    in property <color> tone: Theme.accent;
+    in property <bool> on: false;
+    callback clicked();
+    horizontal-stretch: 1;
+    min-width: 180px;
+    height: 104px;
+    border-radius: Theme.radius-l;
+    background: ta.has-hover ? Theme.surface-2 : Theme.surface;
+    border-width: 1px;
+    border-color: on ? tone.with-alpha(0.45) : Theme.border;
+    drop-shadow-blur: 20px;
+    drop-shadow-offset-y: 6px;
+    drop-shadow-color: Theme.dark ? #00000050 : #0f172a10;
+    animate background, border-color { duration: 160ms; }
+    clip: true;
+    // soft glow in the corner when the tile is "on"
+    Rectangle {
+        x: parent.width - 120px;
+        y: -60px;
+        width: 180px;
+        height: 180px;
+        border-radius: 90px;
+        background: @radial-gradient(circle, root.tone.with-alpha(root.on ? 0.22 : 0.06) 0%, transparent 70%);
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    VerticalLayout {
+        padding: 16px;
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 10px;
+            IconTile { icon: root.icon; tone: root.tone; size: 30px; }
+            Text {
+                horizontal-stretch: 1;
+                text: root.caption;
+                color: Theme.text-3;
+                font-size: Theme.fs-xs;
+                font-weight: 700;
+                letter-spacing: 0.8px;
+                vertical-alignment: center;
+            }
+            VerticalLayout {
+                alignment: center;
+                Dot { tone: root.on ? root.tone : Theme.text-3; glow: root.on; }
+            }
+        }
+        Text {
+            text: root.value;
+            color: Theme.text;
+            font-size: Theme.fs-l;
+            font-weight: 650;
+            overflow: elide;
+        }
+        Text {
+            text: root.detail;
+            color: Theme.text-2;
+            font-size: Theme.fs-s;
+            overflow: elide;
+        }
+    }
+}
+
+export component PageHeader inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> subtitle;
+    spacing: 12px;
+    VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: 3px;
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: Theme.fs-xxl;
+            font-weight: 700;
+        }
+        Text {
+            text: root.subtitle;
+            color: Theme.text-2;
+            font-size: Theme.fs-m;
+            wrap: word-wrap;
+        }
+    }
+    @children
+}

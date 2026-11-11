@@ -104,7 +104,7 @@ Because both Steam Proton and native Linux share the Linux network namespace (`l
 ## 5. Usage & Interactive GUI
 
 ### 5.1 Interactive Graphical Interface (GUI)
-**AeroDeck** features a high-performance immediate-mode GUI built with `egui` and `eframe`.
+**AeroDeck** has a native desktop interface built with [Slint](https://slint.dev): declarative UI files in `ui/`, GPU rendering through OpenGL (with a software fallback), no web view. It ships its own fonts (Inter and JetBrains Mono, SIL OFL 1.1), a dark glass-cockpit theme and a light theme. It follows the desktop scale factor; `SLINT_SCALE_FACTOR=1.2 aerodeck` overrides it.
 
 To launch the GUI:
 ```bash
@@ -114,29 +114,17 @@ To launch the GUI:
 ./target/release/aerodeck gui --profile ./default_c172.xml
 ```
 
-#### GUI Capabilities:
-- **Real-Time Hardware Input Monitor**:
-  - Live feedback banner highlights incoming controller signals as soon as you toggle a switch, press a button, or move an axis.
-  - **Auto-Select Active Hardware Input**: Moving any physical control or axis focuses it immediately.
-- **Analog Axes Telemetry & Calibration**:
-  - Live animated position progress bars showing percentage and raw hardware values.
-  - Direction invert toggle and deadband slider.
-  - Presets for Pitch, Roll, Yaw, Master Throttle, Multi-Engine Throttles, Flaps, Spoilers, and Toe Brakes.
-- **Controller Mapping Editor**:
-  - Browse connected flight hardware and virtual flight panels.
-  - Create, test, and delete bindings directly from the UI.
-  - 50+ Pre-Configured SimConnect Events (Autopilot, Radios, Lights, Systems, Engines, Flight Controls).
-  - Bind to MSFS LVARs with live discovery dropdowns.
-  - Execute RPN Calculator Scripts.
-- **MSFS WASM LVAR Explorer**:
-  - Live searchable table of all variables discovered in the running aircraft with real-time value updates.
-  - Direct variable writing and interactive RPN calculator console.
-- **Interactive Virtual Flight Panel Simulation**:
-  - On-screen visual mockups of Switch Panel, Multi Panel (with 7-segment digital displays), and Radio Panel.
-- **One-Click Steam Proton Setup**:
-  - Automatically locates your MSFS 2020 Steam Proton prefix and configures `SimConnect.xml`.
-- **Live Event Log**:
-  - Real-time scrolling diagnostics of hardware events, SimConnect transactions, and profile executions.
+#### GUI pages (Ctrl+1 … Ctrl+6)
+- **Overview**: simulator, profile, LVAR bridge and PMDG status at a glance, connected controllers and a live feed of every input you touch.
+- **Controls**: pick a controller and an input (or just move it: AeroDeck follows real moves and ignores axis jitter), then
+  - bind an axis to a sim axis event, with invert;
+  - calibrate a lever (full / idle / reverse positions, engines, reverse gate) for throttle quadrants such as the Thrustmaster TCA;
+  - add trigger zones that fire events when a lever enters or leaves a range (spoilers ARM);
+  - add, test and delete actions: SimConnect events (searchable catalog), PMDG events (from the installed SDK), LVARs and RPN code, with optional conditions and button triggers (press, release, short / long press, held, hat directions).
+- **Profiles**: create, import, rename, duplicate, export and delete profiles; aircraft auto-switching patterns with an installed-aircraft picker; generic fallback profile; controller layouts, with SPAD.neXt community snippets and undo.
+- **Variables**: PMDG SDK status and data broadcast, WASM LVAR bridge tools, SimVar watch / write, live SimVar and LVAR tables.
+- **Simulator**: SimConnect connection, Steam Proton prefix detection, SimConnect.xml port and scope, pipe-bridge self-test, config previews.
+- **Logs**: filterable, searchable live log.
 
 ### 5.2 Build
 ```bash

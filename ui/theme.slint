@@ -1,0 +1,104 @@
+// AeroDeck design tokens: a glass-cockpit palette (cyan / green / amber / red, as on a PFD)
+// over deep navy surfaces, with a light variant.
+
+export global Theme {
+    in-out property <bool> dark: true;
+
+    // Surfaces, from the window background up to raised controls
+    out property <color> bg: dark ? #070b12 : #eef2f7;
+    out property <color> bg-glow: dark ? #0f2a3d : #dbeafe;
+    out property <color> sidebar: dark ? #0a1019 : #f8fafc;
+    out property <color> surface: dark ? #0f1620 : #ffffff;
+    out property <color> surface-2: dark ? #141d29 : #f6f8fb;
+    out property <color> surface-3: dark ? #1b2635 : #edf1f6;
+    out property <color> hover: dark ? #ffffff0d : #0f172a0a;
+    out property <color> border: dark ? #1f2b3a : #dfe5ec;
+    out property <color> border-strong: dark ? #2c3c50 : #c9d3de;
+
+    // Text
+    out property <color> text: dark ? #e7eef7 : #0d1724;
+    out property <color> text-2: dark ? #9aabbf : #475569;
+    out property <color> text-3: dark ? #5f7189 : #8a97a8;
+    out property <color> on-accent: dark ? #04141c : #ffffff;
+
+    // Signal colours
+    out property <color> accent: dark ? #2fd5f4 : #0891b2;
+    out property <color> accent-2: dark ? #38bdf8 : #0284c7;
+    out property <color> violet: dark ? #a78bfa : #7c3aed;
+    out property <color> success: dark ? #34d399 : #059669;
+    out property <color> warning: dark ? #fbbf24 : #d97706;
+    out property <color> danger: dark ? #f87171 : #dc2626;
+
+    out property <brush> accent-gradient: @linear-gradient(135deg, accent 0%, accent-2 100%);
+
+    // Shape
+    out property <length> radius-s: 6px;
+    out property <length> radius-m: 9px;
+    out property <length> radius-l: 14px;
+
+    // Type
+    out property <string> font: "Inter";
+    out property <string> mono: "JetBrains Mono";
+    out property <length> fs-xs: 11px;
+    out property <length> fs-s: 12px;
+    out property <length> fs-m: 13px;
+    out property <length> fs-l: 15px;
+    out property <length> fs-xl: 19px;
+    out property <length> fs-xxl: 26px;
+
+    // Colour for a tone index: 0 neutral, 1 accent, 2 success, 3 warning, 4 danger, 5 violet
+    public pure function tone(t: int) -> color {
+        if t == 1 { return accent; }
+        if t == 2 { return success; }
+        if t == 3 { return warning; }
+        if t == 4 { return danger; }
+        if t == 5 { return violet; }
+        return text-2;
+    }
+}
+
+export global Icons {
+    out property <image> gauge: @image-url("icons/gauge.svg");
+    out property <image> gamepad: @image-url("icons/gamepad.svg");
+    out property <image> plane: @image-url("icons/plane.svg");
+    out property <image> layers: @image-url("icons/layers.svg");
+    out property <image> braces: @image-url("icons/braces.svg");
+    out property <image> plug: @image-url("icons/plug.svg");
+    out property <image> terminal: @image-url("icons/terminal.svg");
+    out property <image> sun: @image-url("icons/sun.svg");
+    out property <image> moon: @image-url("icons/moon.svg");
+    out property <image> info: @image-url("icons/info.svg");
+    out property <image> search: @image-url("icons/search.svg");
+    out property <image> plus: @image-url("icons/plus.svg");
+    out property <image> trash: @image-url("icons/trash.svg");
+    out property <image> zap: @image-url("icons/zap.svg");
+    out property <image> check: @image-url("icons/check.svg");
+    out property <image> x: @image-url("icons/x.svg");
+    out property <image> refresh: @image-url("icons/refresh.svg");
+    out property <image> folder: @image-url("icons/folder.svg");
+    out property <image> download: @image-url("icons/download.svg");
+    out property <image> upload: @image-url("icons/upload.svg");
+    out property <image> star: @image-url("icons/star.svg");
+    out property <image> copy: @image-url("icons/copy.svg");
+    out property <image> pencil: @image-url("icons/pencil.svg");
+    out property <image> chevron-down: @image-url("icons/chevron-down.svg");
+    out property <image> chevron-right: @image-url("icons/chevron-right.svg");
+    out property <image> alert: @image-url("icons/alert.svg");
+    out property <image> cpu: @image-url("icons/cpu.svg");
+    out property <image> sliders: @image-url("icons/sliders.svg");
+    out property <image> button: @image-url("icons/button.svg");
+    out property <image> crosshair: @image-url("icons/crosshair.svg");
+    out property <image> save: @image-url("icons/save.svg");
+    out property <image> undo: @image-url("icons/undo.svg");
+    out property <image> globe: @image-url("icons/globe.svg");
+    out property <image> eye: @image-url("icons/eye.svg");
+    out property <image> play: @image-url("icons/play.svg");
+    out property <image> lever: @image-url("icons/lever.svg");
+    out property <image> link: @image-url("icons/link.svg");
+    out property <image> filter: @image-url("icons/filter.svg");
+    out property <image> activity: @image-url("icons/activity.svg");
+    out property <image> wrench: @image-url("icons/wrench.svg");
+    out property <image> target: @image-url("icons/target.svg");
+    out property <image> external: @image-url("icons/external.svg");
+    out property <image> logo: @image-url("../assets/icon.svg");
+}

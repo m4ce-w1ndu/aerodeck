@@ -1,0 +1,482 @@
+import "fonts/Inter-Regular.ttf";
+import "fonts/Inter-Medium.ttf";
+import "fonts/Inter-SemiBold.ttf";
+import "fonts/Inter-Bold.ttf";
+import "fonts/JetBrainsMono-Regular.ttf";
+import "fonts/JetBrainsMono-Medium.ttf";
+
+import { Palette, AboutSlint } from "std-widgets.slint";
+import { Theme, Icons } from "theme.slint";
+import { Button, ButtonKind, IconButton, Pill, Dot, Ico, Select, Modal, Hint, Mono, Divider } from "components/base.slint";
+import { AppState, MappingState, ProfilesState, VarsState, SimState, LogsState } from "state.slint";
+import { OverviewPage } from "pages/overview.slint";
+import { MappingPage } from "pages/mapping.slint";
+import { ProfilesPage } from "pages/profiles.slint";
+import { VariablesPage } from "pages/variables.slint";
+import { SimulatorPage } from "pages/simulator.slint";
+import { LogsPage } from "pages/logs.slint";
+
+export { Theme, AppState, MappingState, ProfilesState, VarsState, SimState, LogsState }
+export {
+    DeviceItem, FeedItem, InputItem, ActionItem, ZoneItem, LeverRow, PickItem, ProfileItem, LayoutDevice,
+    AircraftItem, SnippetItem, VarRow, PmdgRow, LogItem, PortItem, BarSeg, BarMark
+} from "state.slint";
+
+component NavItem inherits Rectangle {
+    in property <image> icon;
+    in property <string> text;
+    in property <string> shortcut;
+    in property <bool> active;
+    in property <int> badge: 0;
+    callback clicked();
+    height: 40px;
+    border-radius: Theme.radius-m;
+    background: active ? Theme.accent.with-alpha(0.13) : ta.has-hover ? Theme.hover : transparent;
+    animate background { duration: 140ms; }
+    // active indicator
+    Rectangle {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        width: 3px;
+        height: root.active ? 20px : 0px;
+        border-radius: 2px;
+        background: Theme.accent;
+        drop-shadow-blur: 6px;
+        drop-shadow-color: Theme.accent;
+        animate height { duration: 180ms; easing: ease-out; }
+    }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 10px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            Ico { source: root.icon; size: 17px; tint: root.active ? Theme.accent : ta.has-hover ? Theme.text : Theme.text-2; }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.text;
+            color: root.active ? Theme.text : Theme.text-2;
+            font-size: Theme.fs-m;
+            font-weight: root.active ? 650 : 500;
+            vertical-alignment: center;
+        }
+        if root.badge > 0: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: 18px;
+                min-width: 18px;
+                border-radius: 9px;
+                background: Theme.danger;
+                HorizontalLayout {
+                    padding-left: 5px;
+                    padding-right: 5px;
+                    Text {
+                        text: root.badge > 99 ? "99+" : root.badge;
+                        color: #ffffff;
+                        font-size: 10px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+        }
+        if root.badge == 0 && ta.has-hover: Text {
+            text: root.shortcut;
+            color: Theme.text-3;
+            font-size: Theme.fs-xs;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component Sidebar inherits Rectangle {
+    width: 232px;
+    background: Theme.sidebar;
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: Theme.border;
+    }
+    VerticalLayout {
+        padding: 14px;
+        padding-top: 18px;
+        spacing: 4px;
+        HorizontalLayout {
+            padding-left: 6px;
+            padding-bottom: 18px;
+            spacing: 11px;
+            Image {
+                source: Icons.logo;
+                width: 38px;
+                height: 38px;
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 1px;
+                Text {
+                    text: "AeroDeck";
+                    color: Theme.text;
+                    font-size: 17px;
+                    font-weight: 750;
+                    letter-spacing: 0.2px;
+                }
+                Text {
+                    text: "v" + AppState.version;
+                    color: Theme.text-3;
+                    font-size: Theme.fs-xs;
+                    font-family: Theme.mono;
+                }
+            }
+        }
+        Text {
+            text: "FLIGHT DECK";
+            color: Theme.text-3;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 1.2px;
+            x: 14px;
+        }
+        Rectangle { height: 4px; }
+        NavItem { icon: Icons.gauge; text: "Overview"; shortcut: "Ctrl 1"; active: AppState.page == 0; clicked => { AppState.navigate(0); } }
+        NavItem { icon: Icons.gamepad; text: "Controls"; shortcut: "Ctrl 2"; active: AppState.page == 1; clicked => { AppState.navigate(1); } }
+        NavItem { icon: Icons.layers; text: "Profiles"; shortcut: "Ctrl 3"; active: AppState.page == 2; clicked => { AppState.navigate(2); } }
+        NavItem { icon: Icons.braces; text: "Variables"; shortcut: "Ctrl 4"; active: AppState.page == 3; clicked => { AppState.navigate(3); } }
+        Rectangle { height: 14px; }
+        Text {
+            text: "SYSTEM";
+            color: Theme.text-3;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 1.2px;
+            x: 14px;
+        }
+        Rectangle { height: 4px; }
+        NavItem { icon: Icons.plug; text: "Simulator"; shortcut: "Ctrl 5"; active: AppState.page == 4; clicked => { AppState.navigate(4); } }
+        NavItem { icon: Icons.terminal; text: "Logs"; shortcut: "Ctrl 6"; active: AppState.page == 5; badge: LogsState.errors; clicked => { AppState.navigate(5); } }
+        Rectangle { vertical-stretch: 1; }
+
+        // Connection summary
+        Rectangle {
+            height: 64px;
+            border-radius: Theme.radius-m;
+            background: AppState.connected ? Theme.success.with-alpha(0.08) : Theme.surface-2;
+            border-width: 1px;
+            border-color: AppState.connected ? Theme.success.with-alpha(0.3) : Theme.border;
+            animate background, border-color { duration: 300ms; }
+            cta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { AppState.navigate(4); }
+            }
+            HorizontalLayout {
+                padding: 12px;
+                spacing: 10px;
+                VerticalLayout {
+                    alignment: center;
+                    Dot { tone: AppState.connected ? Theme.success : Theme.text-3; glow: AppState.connected; }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: AppState.connected ? "Simulator online" : "Simulator offline";
+                        color: Theme.text;
+                        font-size: Theme.fs-s;
+                        font-weight: 650;
+                    }
+                    Text {
+                        text: AppState.sim-endpoint;
+                        color: Theme.text-3;
+                        font-size: Theme.fs-xs;
+                        font-family: Theme.mono;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+        Rectangle { height: 8px; }
+        HorizontalLayout {
+            spacing: 4px;
+            Button {
+                horizontal-stretch: 1;
+                text: Theme.dark ? "Light" : "Dark";
+                icon: Theme.dark ? Icons.sun : Icons.moon;
+                kind: ButtonKind.ghost;
+                small: true;
+                clicked => { AppState.toggle-theme(); }
+            }
+            Button {
+                horizontal-stretch: 1;
+                text: "About";
+                icon: Icons.info;
+                kind: ButtonKind.ghost;
+                small: true;
+                clicked => { AppState.show-about = true; }
+            }
+        }
+    }
+}
+
+component TopBar inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> subtitle;
+    padding-left: 26px;
+    padding-right: 26px;
+    padding-top: 20px;
+    padding-bottom: 14px;
+    spacing: 12px;
+    VerticalLayout {
+        horizontal-stretch: 1;
+        alignment: center;
+        spacing: 3px;
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: Theme.fs-xxl;
+            font-weight: 750;
+        }
+        Text {
+            text: root.subtitle;
+            color: Theme.text-2;
+            font-size: Theme.fs-m;
+            overflow: elide;
+        }
+    }
+    // Live input indicator
+    VerticalLayout {
+        alignment: center;
+        Rectangle {
+            height: 32px;
+            max-width: 320px;
+            border-radius: 16px;
+            background: AppState.input-live ? Theme.success.with-alpha(0.1) : Theme.surface-2;
+            border-width: 1px;
+            border-color: AppState.input-live ? Theme.success.with-alpha(0.4) : Theme.border;
+            animate background, border-color { duration: 250ms; }
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 14px;
+                spacing: 8px;
+                VerticalLayout {
+                    alignment: center;
+                    Ico { source: Icons.activity; size: 14px; tint: AppState.input-live ? Theme.success : Theme.text-3; }
+                }
+                Text {
+                    text: AppState.last-input;
+                    color: AppState.input-live ? Theme.text : Theme.text-3;
+                    font-size: Theme.fs-s;
+                    font-family: Theme.mono;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+    VerticalLayout {
+        alignment: center;
+        Select {
+            width: 230px;
+            items: AppState.profile-names;
+            current: AppState.profile-index;
+            placeholder: "No profile";
+            icon: Icons.layers;
+            popup-width: 280px;
+            changed(i) => { AppState.select-profile(i); }
+        }
+    }
+    if AppState.dirty: VerticalLayout {
+        alignment: center;
+        Button {
+            text: "Save";
+            icon: Icons.save;
+            kind: ButtonKind.primary;
+            clicked => { AppState.save-profile(); }
+        }
+    }
+}
+
+component Toast inherits Rectangle {
+    in property <string> text;
+    in property <int> tone;
+    height: 44px;
+    border-radius: Theme.radius-m;
+    background: Theme.surface-2;
+    border-width: 1px;
+    border-color: Theme.tone(tone).with-alpha(0.5);
+    drop-shadow-blur: 26px;
+    drop-shadow-offset-y: 8px;
+    drop-shadow-color: #00000070;
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 16px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            Ico { source: root.tone == 4 ? Icons.alert : Icons.check; size: 16px; tint: Theme.tone(root.tone); }
+        }
+        Text {
+            text: root.text;
+            color: Theme.text;
+            font-size: Theme.fs-m;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "AeroDeck";
+    icon: @image-url("../assets/icons/icon_256x256.png");
+    preferred-width: 1480px;
+    preferred-height: 940px;
+    min-width: 1100px;
+    min-height: 700px;
+    background: Theme.bg;
+    default-font-family: "Inter";
+    default-font-size: 13px;
+
+    private property <bool> dark: Theme.dark;
+    changed dark => {
+        Palette.color-scheme = self.dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    init => {
+        Palette.color-scheme = Theme.dark ? ColorScheme.dark : ColorScheme.light;
+        keys.focus();
+    }
+
+    keys := FocusScope {
+        key-pressed(e) => {
+            if e.modifiers.control {
+                if e.text == "1" { AppState.navigate(0); return accept; }
+                if e.text == "2" { AppState.navigate(1); return accept; }
+                if e.text == "3" { AppState.navigate(2); return accept; }
+                if e.text == "4" { AppState.navigate(3); return accept; }
+                if e.text == "5" { AppState.navigate(4); return accept; }
+                if e.text == "6" { AppState.navigate(5); return accept; }
+                if e.text == "s" && AppState.dirty { AppState.save-profile(); return accept; }
+            }
+            reject
+        }
+
+        HorizontalLayout {
+            Sidebar { }
+            Rectangle {
+                horizontal-stretch: 1;
+                clip: true;
+                // Ambient glow behind the content
+                Rectangle {
+                    x: parent.width - 700px;
+                    y: -420px;
+                    width: 1100px;
+                    height: 900px;
+                    border-radius: 550px;
+                    background: @radial-gradient(circle, Theme.bg-glow.with-alpha(Theme.dark ? 0.55 : 0.7) 0%, transparent 65%);
+                }
+                VerticalLayout {
+                    TopBar {
+                        title: AppState.page == 0 ? "Overview"
+                            : AppState.page == 1 ? "Controls"
+                            : AppState.page == 2 ? "Profiles"
+                            : AppState.page == 3 ? "Variables"
+                            : AppState.page == 4 ? "Simulator"
+                            : "Logs";
+                        subtitle: AppState.page == 0 ? "Your cockpit at a glance"
+                            : AppState.page == 1 ? "Bind buttons, axes and levers to the simulator"
+                            : AppState.page == 2 ? "Aircraft profiles, auto-switching and controller layouts"
+                            : AppState.page == 3 ? "PMDG SDK, SimVars and LVARs, live"
+                            : AppState.page == 4 ? "SimConnect connection and Steam Proton setup"
+                            : "Everything AeroDeck did, as it happened";
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        if AppState.page == 0: OverviewPage { }
+                        if AppState.page == 1: MappingPage { }
+                        if AppState.page == 2: ProfilesPage { }
+                        if AppState.page == 3: VariablesPage { }
+                        if AppState.page == 4: SimulatorPage { }
+                        if AppState.page == 5: LogsPage { }
+                    }
+                }
+                if AppState.toast-text != "": Toast {
+                    text: AppState.toast-text;
+                    tone: AppState.toast-tone;
+                    width: min(520px, parent.width - 52px);
+                    x: parent.width - self.width - 26px;
+                    y: parent.height - self.height - 24px;
+                }
+            }
+        }
+    }
+
+    if AppState.show-about: Modal {
+        title: "About AeroDeck";
+        dialog-width: 500px;
+        close => { AppState.show-about = false; }
+        HorizontalLayout {
+            spacing: 16px;
+            Image {
+                source: Icons.logo;
+                width: 72px;
+                height: 72px;
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 4px;
+                Text {
+                    text: "AeroDeck " + AppState.version;
+                    color: Theme.text;
+                    font-size: Theme.fs-xl;
+                    font-weight: 750;
+                }
+                Text {
+                    text: "Flight simulator hardware engine and controller bridge for Linux, compatible with SPAD.neXt profiles.";
+                    color: Theme.text-2;
+                    font-size: Theme.fs-m;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        Divider { }
+        HorizontalLayout {
+            spacing: 10px;
+            Text { text: "Author"; color: Theme.text-3; width: 80px; font-size: Theme.fs-s; }
+            Text { text: "Simone Rolando"; color: Theme.text; font-size: Theme.fs-s; }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            Text { text: "Source"; color: Theme.text-3; width: 80px; font-size: Theme.fs-s; }
+            Text {
+                text: "github.com/m4ce-w1ndu/aerodeck";
+                color: Theme.accent;
+                font-size: Theme.fs-s;
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { AppState.open-url("https://github.com/m4ce-w1ndu/aerodeck"); }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            Text { text: "License"; color: Theme.text-3; width: 80px; font-size: Theme.fs-s; }
+            Text { text: "MIT OR Apache-2.0 · fonts: Inter, JetBrains Mono (SIL OFL 1.1)"; color: Theme.text; font-size: Theme.fs-s; wrap: word-wrap; }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            Text { text: "Built with"; color: Theme.text-3; width: 80px; font-size: Theme.fs-s; }
+            Text { text: "Slint"; color: Theme.text; font-size: Theme.fs-s; }
+        }
+        HorizontalLayout {
+            alignment: center;
+            AboutSlint { height: 90px; }
+        }
+        Hint {
+            text: "AeroDeck is an independent open-source project, not affiliated with or endorsed by Microsoft, Asobo Studio, PMDG, Lockheed Martin, Laminar Research or SPAD.neXt. Product names are trademarks of their respective owners.";
+            font-size: Theme.fs-xs;
+        }
+    }
+}

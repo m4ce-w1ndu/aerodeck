@@ -23,9 +23,11 @@ hidapi = { version = "2.6", optional = true }
 regex = "1.10"
 colored = "2.1"
 futures = "0.3"
-eframe = { version = "0.30", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
-egui = "0.30"
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility"] }
 rfd = "0.15"
+
+[build-dependencies]
+slint-build = "1.18"
 
 
 [features]

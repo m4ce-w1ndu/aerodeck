@@ -1,0 +1,606 @@
+import { ScrollView, ListView } from "std-widgets.slint";
+import { Theme, Icons } from "../theme.slint";
+import {
+    Button, ButtonKind, IconButton, Card, Panel, SectionTitle, Pill, Dot, Ico, IconTile, EmptyState, Mono, Hint,
+    Label, Caption, Field, Segmented, Select, Toggle, Check, Row, Divider
+} from "../components/base.slint";
+import { ProfilesState } from "../state.slint";
+import { PageHeader } from "common.slint";
+
+component ProfileList inherits Card {
+    fill: true;
+    pad: 12px;
+    gap: 8px;
+    Field {
+        text <=> ProfilesState.search;
+        placeholder: "Search profiles or aircraft";
+        icon: Icons.search;
+        clearable: true;
+        edited => { ProfilesState.search-changed(); }
+    }
+    HorizontalLayout {
+        padding-left: 4px;
+        Caption { text: ProfilesState.profiles.length + " PROFILES"; horizontal-stretch: 1; }
+    }
+    if ProfilesState.profiles.length == 0: Hint { text: "No profiles found."; horizontal-alignment: center; }
+    ListView {
+        vertical-stretch: 1;
+        min-height: 200px;
+        for p in ProfilesState.profiles: Rectangle {
+            height: 78px;
+            Row {
+                y: 3px;
+                height: 72px;
+                pad-x: 12px;
+                selected: p.path == ProfilesState.selected-path;
+                clicked => { ProfilesState.select(p.path); }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 4px;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            horizontal-stretch: 1;
+                            text: p.name;
+                            color: Theme.text;
+                            font-size: Theme.fs-m;
+                            font-weight: 650;
+                            overflow: elide;
+                        }
+                        if p.active: Pill { text: "ACTIVE"; tone: Theme.success; dot: true; }
+                        if p.fallback: Pill { text: "FALLBACK"; tone: Theme.warning; }
+                    }
+                    Text {
+                        text: p.patterns;
+                        color: Theme.text-2;
+                        font-size: Theme.fs-s;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: p.devices + " controllers · " + p.inputs + " inputs";
+                        color: Theme.text-3;
+                        font-size: Theme.fs-xs;
+                    }
+                }
+            }
+        }
+    }
+}
+
+component PatternsCard inherits Card {
+    HorizontalLayout {
+        SectionTitle {
+            title: "Aircraft auto-switching";
+            subtitle: "When MSFS loads an aircraft matching one of these, this profile is activated";
+            icon: Icons.plane;
+        }
+        VerticalLayout {
+            alignment: center;
+            Pill { text: ProfilesState.patterns.length + " pattern(s)"; tone: Theme.text-2; }
+        }
+    }
+    if ProfilesState.patterns.length == 0: Hint { text: "No patterns yet. Add an aircraft title or a wildcard such as PMDG 777*."; }
+    for pat in ProfilesState.patterns: Rectangle {
+        height: 36px;
+        border-radius: Theme.radius-m;
+        background: Theme.surface-2;
+        border-width: 1px;
+        border-color: Theme.border;
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 4px;
+            spacing: 10px;
+            VerticalLayout {
+                alignment: center;
+                Ico { source: Icons.plane; size: 14px; tint: Theme.accent; }
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: pat;
+                color: Theme.text;
+                font-size: Theme.fs-m;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: Icons.x;
+                    size: 26px;
+                    clicked => { ProfilesState.remove-pattern(pat); }
+                }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Field {
+            text <=> ProfilesState.new-pattern;
+            placeholder: "e.g. PMDG 737* or A320 or C172";
+            accepted => { ProfilesState.add-pattern(); }
+        }
+        Button {
+            text: "Add";
+            icon: Icons.plus;
+            kind: ButtonKind.accent;
+            clicked => { ProfilesState.add-pattern(); }
+        }
+        Button {
+            text: ProfilesState.picker-open ? "Close picker" : "Pick installed aircraft";
+            icon: Icons.plane;
+            kind: ProfilesState.picker-open ? ButtonKind.secondary : ButtonKind.ghost;
+            clicked => { ProfilesState.toggle-picker(); }
+        }
+    }
+    if ProfilesState.picker-open: Panel {
+        HorizontalLayout {
+            spacing: 8px;
+            Field {
+                text <=> ProfilesState.picker-query;
+                placeholder: "Filter, e.g. PMDG 777";
+                icon: Icons.search;
+                clearable: true;
+                edited => { ProfilesState.picker-filter-changed(); }
+            }
+            Button {
+                text: "Select all " + ProfilesState.picker-visible;
+                small: true;
+                kind: ButtonKind.ghost;
+                y: 3px;
+                clicked => { ProfilesState.picker-select-all(); }
+            }
+            Button {
+                text: "Clear";
+                small: true;
+                kind: ButtonKind.ghost;
+                y: 3px;
+                clicked => { ProfilesState.picker-clear(); }
+            }
+        }
+        Rectangle {
+            height: 240px;
+            border-radius: Theme.radius-m;
+            background: Theme.bg;
+            border-width: 1px;
+            border-color: Theme.border;
+            clip: true;
+            if ProfilesState.picker-items.length == 0: Hint {
+                x: 12px;
+                y: 10px;
+                text: "No installed aircraft found in the MSFS folders.";
+            }
+            ListView {
+                x: 6px;
+                y: 4px;
+                width: parent.width - 12px;
+                height: parent.height - 8px;
+                for a in ProfilesState.picker-items: Rectangle {
+                    height: 30px;
+                    Check {
+                        x: 6px;
+                        width: parent.width - 12px;
+                        height: parent.height;
+                        checked: a.checked || a.already;
+                        enabled: !a.already;
+                        text: a.title + "  ·  " + a.model;
+                        text-color: a.already ? Theme.text-3 : Theme.text;
+                        toggled => { ProfilesState.picker-toggle(a.title); }
+                    }
+                }
+            }
+        }
+        HorizontalLayout {
+            Button {
+                text: "Add " + ProfilesState.picker-count + " aircraft to this profile";
+                icon: Icons.check;
+                kind: ButtonKind.primary;
+                enabled: ProfilesState.picker-count > 0;
+                clicked => { ProfilesState.picker-add(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+}
+
+component SnippetBrowser inherits Panel {
+    tone: Theme.accent;
+    pad: 14px;
+    gap: 10px;
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            horizontal-stretch: 1;
+            text: "SPAD.neXt community snippets";
+            color: Theme.accent;
+            font-size: Theme.fs-l;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+        if ProfilesState.can-undo-snippet: Button {
+            text: "Undo last import";
+            icon: Icons.undo;
+            small: true;
+            kind: ButtonKind.ghost;
+            clicked => { ProfilesState.undo-snippet(); }
+        }
+        Button {
+            text: "Local .xml…";
+            icon: Icons.folder;
+            small: true;
+            kind: ButtonKind.ghost;
+            clicked => { ProfilesState.import-local-snippet(); }
+        }
+        IconButton {
+            icon: Icons.x;
+            clicked => { ProfilesState.snippets-open = false; }
+        }
+    }
+    Hint { text: "Importing adds the snippet's mappings to this profile. Inputs the snippet does not define keep their current mappings."; }
+    HorizontalLayout {
+        spacing: 10px;
+        Field {
+            text <=> ProfilesState.snippet-search;
+            placeholder: "Search by aircraft, name or author";
+            icon: Icons.search;
+            clearable: true;
+            edited => { ProfilesState.snippet-filter-changed(); }
+        }
+        VerticalLayout {
+            alignment: center;
+            Check {
+                text: "Only this controller";
+                checked <=> ProfilesState.snippet-match;
+                toggled => { ProfilesState.snippet-filter-changed(); }
+            }
+        }
+        Button {
+            text: "Refresh";
+            icon: Icons.refresh;
+            kind: ButtonKind.ghost;
+            clicked => { ProfilesState.refresh-catalog(); }
+        }
+    }
+    if ProfilesState.fetching || ProfilesState.importing: HorizontalLayout {
+        spacing: 8px;
+        Dot { tone: Theme.accent; glow: true; y: 5px; }
+        Text {
+            text: ProfilesState.importing ? "Downloading snippet…" : "Loading community snippets from update.spadnext.net…";
+            color: Theme.accent;
+            font-size: Theme.fs-s;
+        }
+    }
+    if ProfilesState.snippets.length == 0 && !ProfilesState.fetching: Hint { text: ProfilesState.snippets-empty; }
+    if ProfilesState.snippets.length > 0: Rectangle {
+        height: 280px;
+        ListView {
+            for s in ProfilesState.snippets: Rectangle {
+                height: 62px;
+                Rectangle {
+                    y: 3px;
+                    height: 56px;
+                    border-radius: Theme.radius-m;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 8px;
+                        spacing: 10px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            spacing: 3px;
+                            Text {
+                                text: s.name;
+                                color: Theme.text;
+                                font-size: Theme.fs-m;
+                                font-weight: 600;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: "by " + s.author + " · v" + s.version + (s.aircraft != "" ? " · " + s.aircraft : "");
+                                color: Theme.text-3;
+                                font-size: Theme.fs-s;
+                                overflow: elide;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Pill { text: s.downloads + " downloads"; tone: Theme.text-2; }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Pill { text: "rated " + s.rating; tone: Theme.warning; }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Button {
+                                text: "Import";
+                                icon: Icons.download;
+                                small: true;
+                                kind: ButtonKind.success;
+                                enabled: !ProfilesState.importing;
+                                clicked => { ProfilesState.import-snippet(s.id); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component LayoutsCard inherits Card {
+    HorizontalLayout {
+        spacing: 10px;
+        SectionTitle {
+            title: "Controller layouts";
+            subtitle: "Each controller has its own buttons, switches and axes in this profile";
+            icon: Icons.gamepad;
+        }
+        VerticalLayout {
+            alignment: center;
+            Select {
+                width: 220px;
+                items: ProfilesState.addable-devices;
+                current: -1;
+                placeholder: "Add controller…";
+                icon: Icons.plus;
+                popup-width: 300px;
+                changed(i) => { ProfilesState.add-device(i); }
+            }
+        }
+    }
+    if ProfilesState.layout-devices.length == 0: Hint { text: "This profile has no controllers yet. Add one of your connected devices."; }
+    if ProfilesState.layout-devices.length > 0: Segmented {
+        items: ProfilesState.layout-device-names;
+        current <=> ProfilesState.layout-index;
+        changed(i) => { ProfilesState.select-layout(i); }
+    }
+    if ProfilesState.has-layout: Panel {
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: ProfilesState.layout-name;
+                color: Theme.text;
+                font-size: Theme.fs-m;
+                font-weight: 650;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            VerticalLayout {
+                alignment: center;
+                Pill { text: ProfilesState.layout-vidpid; tone: Theme.accent; mono: true; }
+            }
+            VerticalLayout {
+                alignment: center;
+                Pill { text: ProfilesState.layout-mapped + " mapped inputs"; tone: ProfilesState.layout-mapped > 0 ? Theme.success : Theme.text-3; }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Button {
+                text: "Import SPAD.neXt snippet";
+                icon: Icons.globe;
+                kind: ButtonKind.accent;
+                small: true;
+                clicked => { ProfilesState.toggle-snippets(); }
+            }
+            if ProfilesState.can-undo-clear: Button {
+                text: "Undo clear";
+                icon: Icons.undo;
+                kind: ButtonKind.ghost;
+                small: true;
+                clicked => { ProfilesState.undo-clear(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: "Clear layout";
+                icon: Icons.x;
+                kind: ButtonKind.ghost;
+                small: true;
+                clicked => { ProfilesState.clear-layout(); }
+            }
+            Button {
+                text: "Remove controller";
+                icon: Icons.trash;
+                kind: ButtonKind.danger;
+                small: true;
+                clicked => { ProfilesState.remove-device(); }
+            }
+        }
+    }
+    if ProfilesState.snippets-open: SnippetBrowser { }
+}
+
+export component ProfilesPage inherits Rectangle {
+    VerticalLayout {
+        padding: 26px;
+        padding-top: 8px;
+        spacing: 14px;
+        HorizontalLayout {
+            spacing: 10px;
+            VerticalLayout {
+                alignment: center;
+                Toggle {
+                    text: "Auto-switch with the aircraft";
+                    checked: ProfilesState.auto-switch;
+                    toggled(v) => { ProfilesState.set-auto-switch(v); }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if ProfilesState.creating: Field {
+                width: 260px;
+                horizontal-stretch: 0;
+                text <=> ProfilesState.new-name;
+                placeholder: "Profile name";
+                accepted => { ProfilesState.create(); }
+            }
+            if ProfilesState.creating: Button {
+                text: "Create";
+                icon: Icons.check;
+                kind: ButtonKind.primary;
+                clicked => { ProfilesState.create(); }
+            }
+            if ProfilesState.creating: Button {
+                text: "Cancel";
+                kind: ButtonKind.ghost;
+                clicked => { ProfilesState.creating = false; }
+            }
+            if !ProfilesState.creating: Button {
+                text: "Import .xml";
+                icon: Icons.upload;
+                kind: ButtonKind.ghost;
+                clicked => { ProfilesState.import-profile(); }
+            }
+            if !ProfilesState.creating: Button {
+                text: "New profile";
+                icon: Icons.plus;
+                kind: ButtonKind.primary;
+                clicked => {
+                    ProfilesState.new-name = "New Aircraft Profile";
+                    ProfilesState.creating = true;
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 16px;
+            vertical-stretch: 1;
+            ProfileList { width: 330px; }
+            sv := ScrollView {
+                horizontal-stretch: 1;
+                VerticalLayout {
+                    width: sv.visible-width;
+                    alignment: start;
+                    spacing: 14px;
+                    padding-right: 4px;
+                    if !ProfilesState.has-selection: Card {
+                        EmptyState {
+                            icon: Icons.layers;
+                            title: "No profile selected";
+                            text: "Pick a profile on the left to see and edit it.";
+                        }
+                    }
+                    if ProfilesState.has-selection: Card {
+                        HorizontalLayout {
+                            spacing: 14px;
+                            IconTile { icon: Icons.layers; size: 46px; tone: ProfilesState.is-active ? Theme.success : Theme.accent; }
+                            if !ProfilesState.renaming: VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: ProfilesState.name;
+                                        color: Theme.text;
+                                        font-size: Theme.fs-xl;
+                                        font-weight: 700;
+                                        overflow: elide;
+                                    }
+                                    IconButton {
+                                        icon: Icons.pencil;
+                                        size: 26px;
+                                        clicked => { ProfilesState.start-rename(); }
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+                                Mono { text: ProfilesState.file; color: Theme.text-3; font-size: Theme.fs-xs; }
+                            }
+                            if ProfilesState.renaming: HorizontalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 8px;
+                                Field {
+                                    text <=> ProfilesState.rename-text;
+                                    accepted => { ProfilesState.rename(); }
+                                    y: 7px;
+                                }
+                                Button {
+                                    text: "Save";
+                                    kind: ButtonKind.primary;
+                                    y: 7px;
+                                    clicked => { ProfilesState.rename(); }
+                                }
+                                Button {
+                                    text: "Cancel";
+                                    kind: ButtonKind.ghost;
+                                    y: 7px;
+                                    clicked => { ProfilesState.renaming = false; }
+                                }
+                            }
+                            if ProfilesState.is-active: VerticalLayout {
+                                alignment: center;
+                                Pill { text: ProfilesState.active-why; tone: Theme.success; dot: true; }
+                            }
+                            if !ProfilesState.is-active: VerticalLayout {
+                                alignment: center;
+                                Button {
+                                    text: "Activate";
+                                    icon: Icons.play;
+                                    kind: ButtonKind.primary;
+                                    clicked => { ProfilesState.activate(ProfilesState.selected-path); }
+                                }
+                            }
+                        }
+                        Divider { }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Button {
+                                text: ProfilesState.is-fallback ? "Generic fallback" : "Use as fallback";
+                                icon: Icons.star;
+                                small: true;
+                                kind: ProfilesState.is-fallback ? ButtonKind.accent : ButtonKind.ghost;
+                                clicked => { ProfilesState.toggle-fallback(); }
+                            }
+                            Button {
+                                text: "Duplicate";
+                                icon: Icons.copy;
+                                small: true;
+                                kind: ButtonKind.ghost;
+                                clicked => { ProfilesState.duplicate(); }
+                            }
+                            Button {
+                                text: "Export…";
+                                icon: Icons.external;
+                                small: true;
+                                kind: ButtonKind.ghost;
+                                clicked => { ProfilesState.export(); }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            if !ProfilesState.confirm-delete: Button {
+                                text: "Delete";
+                                icon: Icons.trash;
+                                small: true;
+                                kind: ButtonKind.danger;
+                                clicked => { ProfilesState.confirm-delete = true; }
+                            }
+                            if ProfilesState.confirm-delete: Text {
+                                text: "Delete this profile file?";
+                                color: Theme.danger;
+                                font-size: Theme.fs-s;
+                                vertical-alignment: center;
+                            }
+                            if ProfilesState.confirm-delete: Button {
+                                text: "Delete";
+                                small: true;
+                                kind: ButtonKind.danger;
+                                clicked => { ProfilesState.delete(); }
+                            }
+                            if ProfilesState.confirm-delete: Button {
+                                text: "Keep";
+                                small: true;
+                                kind: ButtonKind.ghost;
+                                clicked => { ProfilesState.confirm-delete = false; }
+                            }
+                        }
+                    }
+                    if ProfilesState.has-selection: PatternsCard { }
+                    if ProfilesState.has-selection: LayoutsCard { }
+                    Rectangle { height: 8px; }
+                }
+            }
+        }
+    }
+}

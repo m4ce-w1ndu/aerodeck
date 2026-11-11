@@ -79,13 +79,13 @@ pub struct ProfileVariable {
     pub var_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct ProfileOptionsList {
     #[serde(rename = "Option", default)]
     pub items: Vec<ProfileOption>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProfileOption {
     #[serde(rename = "@Key")]
     pub key: String,

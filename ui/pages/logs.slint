@@ -1,0 +1,94 @@
+import { ListView } from "std-widgets.slint";
+import { Theme, Icons } from "../theme.slint";
+import { Button, ButtonKind, Card, Pill, Mono, Field, Segmented, Toggle, EmptyState } from "../components/base.slint";
+import { LogsState } from "../state.slint";
+
+export component LogsPage inherits Rectangle {
+    VerticalLayout {
+        padding: 26px;
+        padding-top: 8px;
+        spacing: 14px;
+        HorizontalLayout {
+            spacing: 10px;
+            Segmented {
+                items: ["All", "Errors", "Warnings", "Actions", "Info"];
+                current <=> LogsState.level-filter;
+                changed => { LogsState.filter-changed(); }
+            }
+            Field {
+                text <=> LogsState.query;
+                placeholder: "Search the log";
+                icon: Icons.search;
+                clearable: true;
+                edited => { LogsState.filter-changed(); }
+            }
+            VerticalLayout {
+                alignment: center;
+                Pill { text: LogsState.errors + " errors"; tone: LogsState.errors > 0 ? Theme.danger : Theme.text-3; }
+            }
+            VerticalLayout {
+                alignment: center;
+                Pill { text: LogsState.warnings + " warnings"; tone: LogsState.warnings > 0 ? Theme.warning : Theme.text-3; }
+            }
+            VerticalLayout {
+                alignment: center;
+                Toggle { text: "Follow"; checked <=> LogsState.autoscroll; }
+            }
+            Button {
+                text: "Clear";
+                icon: Icons.trash;
+                kind: ButtonKind.ghost;
+                clicked => { LogsState.clear(); }
+            }
+        }
+        Card {
+            vertical-stretch: 1;
+            fill: true;
+            pad: 8px;
+            if LogsState.logs.length == 0: EmptyState {
+                icon: Icons.terminal;
+                title: "Nothing logged";
+                text: "Connection events, actions and errors appear here.";
+            }
+            lv := ListView {
+                vertical-stretch: 1;
+                visible: LogsState.logs.length > 0;
+                for l in LogsState.logs: Rectangle {
+                    height: 26px;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 12px;
+                        Mono { text: l.time; color: Theme.text-3; font-size: Theme.fs-xs; width: 58px; }
+                        Rectangle {
+                            width: 58px;
+                            Text {
+                                text: l.level;
+                                color: Theme.tone(l.tone);
+                                font-family: Theme.mono;
+                                font-size: Theme.fs-xs;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                                height: parent.height;
+                            }
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: l.text;
+                            color: l.tone == 4 ? Theme.danger : Theme.text;
+                            font-size: Theme.fs-s;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    private property <int> serial: LogsState.scroll-serial;
+    changed serial => {
+        if LogsState.autoscroll {
+            lv.content-y = min(0px, lv.visible-height - lv.content-height);
+        }
+    }
+}

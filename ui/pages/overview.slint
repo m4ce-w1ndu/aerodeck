@@ -1,0 +1,265 @@
+import { ScrollView, ListView } from "std-widgets.slint";
+import { Theme, Icons } from "../theme.slint";
+import { Button, ButtonKind, Card, SectionTitle, Pill, Dot, Ico, IconTile, EmptyState, Mono, Hint } from "../components/base.slint";
+import { AppState } from "../state.slint";
+import { StatTile, Helpers } from "common.slint";
+
+component Hero inherits Rectangle {
+    height: 150px;
+    border-radius: Theme.radius-l;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    clip: true;
+    drop-shadow-blur: 24px;
+    drop-shadow-offset-y: 8px;
+    drop-shadow-color: Theme.dark ? #00000060 : #0f172a14;
+    Rectangle {
+        background: @linear-gradient(110deg, Theme.accent.with-alpha(0.20) 0%, Theme.violet.with-alpha(0.10) 45%, transparent 80%);
+    }
+    // Artificial horizon motif
+    Image {
+        source: Icons.logo;
+        width: 230px;
+        height: 230px;
+        x: parent.width - 180px;
+        y: -40px;
+        opacity: 0.12;
+    }
+    HorizontalLayout {
+        padding: 26px;
+        spacing: 20px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 8px;
+            HorizontalLayout {
+                spacing: 8px;
+                Pill {
+                    text: AppState.connected ? "SIM ONLINE" : "SIM OFFLINE";
+                    tone: AppState.connected ? Theme.success : Theme.text-3;
+                    dot: true;
+                }
+                if AppState.aircraft-detected: Pill {
+                    text: AppState.auto-matched ? "PROFILE AUTO-MATCHED" : "MANUAL PROFILE";
+                    tone: AppState.auto-matched ? Theme.accent : Theme.warning;
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            Text {
+                text: AppState.aircraft-detected ? AppState.aircraft : "Ready when you are";
+                color: Theme.text;
+                font-size: 28px;
+                font-weight: 750;
+                overflow: elide;
+            }
+            Text {
+                text: AppState.aircraft-detected
+                    ? "Flying with profile " + AppState.profile-name
+                    : AppState.connected ? "Connected to the simulator. Load an aircraft to start flying." : "Start Microsoft Flight Simulator, then connect. AeroDeck reconnects by itself.";
+                color: Theme.text-2;
+                font-size: Theme.fs-m;
+                overflow: elide;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            if !AppState.connected: Button {
+                text: "Connect to simulator";
+                icon: Icons.plug;
+                kind: ButtonKind.primary;
+                clicked => { AppState.quick-connect(); }
+            }
+            if AppState.connected: Button {
+                text: "Configure controls";
+                icon: Icons.gamepad;
+                kind: ButtonKind.accent;
+                clicked => { AppState.navigate(1); }
+            }
+        }
+    }
+}
+
+export component OverviewPage inherits Rectangle {
+    sv := ScrollView {
+        VerticalLayout {
+            width: sv.visible-width;
+            alignment: start;
+            padding: 26px;
+            padding-top: 8px;
+            spacing: 18px;
+
+            Hero { }
+
+            HorizontalLayout {
+                spacing: 14px;
+                StatTile {
+                    icon: Icons.plug;
+                    caption: "SIMCONNECT";
+                    value: AppState.connected ? "Online" : "Offline";
+                    detail: AppState.sim-endpoint;
+                    tone: Theme.success;
+                    on: AppState.connected;
+                    clicked => { AppState.navigate(4); }
+                }
+                StatTile {
+                    icon: Icons.layers;
+                    caption: "ACTIVE PROFILE";
+                    value: AppState.profile-name + (AppState.dirty ? " •" : "");
+                    detail: AppState.profile-meta;
+                    tone: Theme.accent;
+                    on: AppState.profile-index >= 0;
+                    clicked => { AppState.navigate(2); }
+                }
+                StatTile {
+                    icon: Icons.braces;
+                    caption: "LVAR BRIDGE";
+                    value: AppState.bridge-active ? AppState.lvar-count + " LVARs" : "Offline";
+                    detail: AppState.bridge-active ? "SPAD.neXt WASM module connected" : "Needs the SPAD.neXt WASM module in MSFS";
+                    tone: Theme.violet;
+                    on: AppState.bridge-active;
+                    clicked => { AppState.navigate(3); }
+                }
+                StatTile {
+                    icon: Icons.plane;
+                    caption: "PMDG SDK";
+                    value: AppState.pmdg-status;
+                    detail: AppState.proton-ready ? "Steam Proton prefix found" : "Steam Proton prefix not found";
+                    tone: Theme.tone(AppState.pmdg-tone);
+                    on: AppState.pmdg-tone == 2;
+                    clicked => { AppState.navigate(3); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 14px;
+                Card {
+                    horizontal-stretch: 3;
+                    HorizontalLayout {
+                        SectionTitle {
+                            title: "Flight hardware";
+                            subtitle: AppState.devices.length + " controller(s) connected";
+                            icon: Icons.gamepad;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Button {
+                                text: "Rescan";
+                                icon: Icons.refresh;
+                                small: true;
+                                kind: ButtonKind.ghost;
+                                clicked => { AppState.rescan-devices(); }
+                            }
+                        }
+                    }
+                    if AppState.devices.length == 0: EmptyState {
+                        icon: Icons.gamepad;
+                        title: "No controllers detected";
+                        text: "Plug in a joystick, throttle quadrant or panel, then rescan.";
+                    }
+                    for d[i] in AppState.devices: Rectangle {
+                        height: 64px;
+                        border-radius: Theme.radius-m;
+                        background: dta.has-hover ? Theme.surface-3 : Theme.surface-2;
+                        border-width: 1px;
+                        border-color: d.live ? Theme.success.with-alpha(0.5) : Theme.border;
+                        animate background, border-color { duration: 160ms; }
+                        dta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { AppState.open-device(i); }
+                        }
+                        HorizontalLayout {
+                            padding: 12px;
+                            spacing: 12px;
+                            VerticalLayout {
+                                alignment: center;
+                                IconTile { icon: Helpers.device-icon(d.category); tone: d.live ? Theme.success : Theme.accent; size: 38px; }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                spacing: 4px;
+                                Text {
+                                    text: d.name;
+                                    color: Theme.text;
+                                    font-size: Theme.fs-m;
+                                    font-weight: 600;
+                                    overflow: elide;
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Mono { text: d.vidpid; color: Theme.text-3; font-size: Theme.fs-xs; }
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: d.buttons + " buttons · " + d.axes + " axes";
+                                        color: Theme.text-2;
+                                        font-size: Theme.fs-s;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Pill {
+                                    text: d.mapped > 0 ? d.mapped + " mapped" : "not mapped";
+                                    tone: d.mapped > 0 ? Theme.success : Theme.text-3;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Ico { source: Icons.chevron-right; size: 16px; tint: Theme.text-3; }
+                            }
+                        }
+                    }
+                }
+
+                Card {
+                    horizontal-stretch: 2;
+                    min-width: 300px;
+                    SectionTitle {
+                        title: "Live input";
+                        subtitle: "Every button and axis you touch shows up here";
+                        icon: Icons.activity;
+                        tone: Theme.success;
+                    }
+                    if AppState.feed.length == 0: EmptyState {
+                        icon: Icons.activity;
+                        title: "Quiet for now";
+                        text: "Move a lever or press a button on your hardware.";
+                    }
+                    for f[i] in AppState.feed: Rectangle {
+                        height: 34px;
+                        border-radius: Theme.radius-s;
+                        background: i == 0 ? Theme.success.with-alpha(0.08) : transparent;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 10px;
+                            Mono { text: f.time; color: Theme.text-3; font-size: Theme.fs-xs; }
+                            VerticalLayout {
+                                alignment: center;
+                                Ico { source: f.axis ? Icons.sliders : Icons.button; size: 13px; tint: f.axis ? Theme.accent : Theme.success; }
+                            }
+                            Text {
+                                text: f.input;
+                                color: Theme.text;
+                                font-size: Theme.fs-m;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                horizontal-stretch: 1;
+                                text: f.device;
+                                color: Theme.text-3;
+                                font-size: Theme.fs-s;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            Mono { text: f.value; color: f.axis ? Theme.accent : Theme.success; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

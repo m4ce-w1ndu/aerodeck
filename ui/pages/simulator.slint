@@ -1,0 +1,308 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Icons } from "../theme.slint";
+import {
+    Button, ButtonKind, IconButton, Card, Panel, SectionTitle, Pill, Dot, Ico, IconTile, Mono, Hint,
+    Label, Caption, Field, Segmented, Divider
+} from "../components/base.slint";
+import { SimState } from "../state.slint";
+
+component CodeBlock inherits Rectangle {
+    in property <string> text;
+    border-radius: Theme.radius-m;
+    background: Theme.bg;
+    border-width: 1px;
+    border-color: Theme.border;
+    VerticalLayout {
+        padding: 12px;
+        TextInput {
+            text: root.text;
+            read-only: true;
+            single-line: false;
+            font-family: Theme.mono;
+            font-size: Theme.fs-s;
+            color: Theme.text-2;
+            selection-background-color: Theme.accent.with-alpha(0.35);
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component SimulatorPage inherits Rectangle {
+    sv := ScrollView {
+        VerticalLayout {
+            width: sv.visible-width;
+            alignment: start;
+            padding: 26px;
+            padding-top: 8px;
+            spacing: 14px;
+
+            Card {
+                highlight: SimState.connected;
+                HorizontalLayout {
+                    spacing: 14px;
+                    IconTile { icon: Icons.plug; size: 46px; tone: SimState.connected ? Theme.success : Theme.text-3; }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        spacing: 4px;
+                        Text {
+                            text: SimState.connected ? "Connected to the simulator" : "Not connected";
+                            color: Theme.text;
+                            font-size: Theme.fs-xl;
+                            font-weight: 700;
+                        }
+                        Text {
+                            text: SimState.status;
+                            color: Theme.text-2;
+                            font-size: Theme.fs-s;
+                            overflow: elide;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Field { width: 150px; text <=> SimState.host; mono: true; placeholder: "Host"; }
+                            Field { width: 80px; text <=> SimState.port; mono: true; placeholder: "Port"; input-type: InputType.number; }
+                            if !SimState.connected: Button {
+                                text: "Connect";
+                                icon: Icons.zap;
+                                kind: ButtonKind.primary;
+                                clicked => { SimState.connect(); }
+                            }
+                            if SimState.connected: Button {
+                                text: "Disconnect";
+                                kind: ButtonKind.danger;
+                                clicked => { SimState.disconnect(); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 14px;
+                Card {
+                    horizontal-stretch: 1;
+                    SectionTitle {
+                        title: "Steam Proton prefix";
+                        subtitle: "AeroDeck finds MSFS in every Steam library and configures SimConnect for you";
+                        icon: Icons.folder;
+                    }
+                    Panel {
+                        tone: SimState.xml-state == 3 ? Theme.success : SimState.xml-state == 0 ? Theme.danger : Theme.warning;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout {
+                                alignment: center;
+                                Ico {
+                                    source: SimState.xml-state == 3 ? Icons.check : Icons.alert;
+                                    size: 16px;
+                                    tint: SimState.xml-state == 3 ? Theme.success : SimState.xml-state == 0 ? Theme.danger : Theme.warning;
+                                }
+                            }
+                            Text {
+                                horizontal-stretch: 1;
+                                text: SimState.xml-state == 3 ? "SimConnect.xml has a TCP listener"
+                                    : SimState.xml-state == 2 ? "SimConnect.xml has no static IPv4 port (only Pipe or dynamic port 0)"
+                                    : SimState.xml-state == 1 ? "SimConnect.xml not created yet: configure below"
+                                    : "MSFS Proton prefix not found: browse to compatdata/1250410/pfx";
+                                color: Theme.text;
+                                font-size: Theme.fs-m;
+                                font-weight: 600;
+                                wrap: word-wrap;
+                            }
+                        }
+                        if SimState.roaming-path != "": Mono { text: SimState.roaming-path; color: Theme.text-3; font-size: Theme.fs-xs; wrap: word-wrap; }
+                        for p in SimState.ports: HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout {
+                                alignment: center;
+                                Pill { text: "port " + p.port; tone: Theme.accent; mono: true; }
+                            }
+                            Text {
+                                text: "scope " + p.scope;
+                                color: Theme.text-2;
+                                font-size: Theme.fs-s;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            if p.active: Pill { text: "in use"; tone: Theme.success; dot: true; y: 3px; }
+                            if !p.active: Button {
+                                text: "Use";
+                                small: true;
+                                kind: ButtonKind.accent;
+                                clicked => { SimState.use-port(p.port); }
+                            }
+                        }
+                        if SimState.privileged-warning != "": Text {
+                            text: SimState.privileged-warning;
+                            color: Theme.warning;
+                            font-size: Theme.fs-s;
+                            wrap: word-wrap;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Field {
+                            text <=> SimState.prefix;
+                            mono: true;
+                            placeholder: "…/steamapps/compatdata/1250410/pfx";
+                            icon: Icons.folder;
+                            edited => { SimState.prefix-edited(); }
+                        }
+                        Button {
+                            text: "Browse…";
+                            kind: ButtonKind.secondary;
+                            clicked => { SimState.browse(); }
+                        }
+                        Button {
+                            text: "Auto-detect";
+                            icon: Icons.refresh;
+                            kind: ButtonKind.ghost;
+                            clicked => { SimState.auto-detect(); }
+                        }
+                    }
+                }
+
+                Card {
+                    horizontal-stretch: 1;
+                    SectionTitle {
+                        title: "SimConnect network";
+                        subtitle: "TCP port and scope written into SimConnect.xml";
+                        icon: Icons.globe;
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Label { text: "Port"; width: 50px; }
+                        Field {
+                            width: 90px;
+                            horizontal-stretch: 0;
+                            text <=> SimState.cfg-port;
+                            mono: true;
+                            input-type: InputType.number;
+                            edited => { SimState.cfg-port-edited(); }
+                        }
+                        Segmented {
+                            items: ["45454 Linux", "2048", "500 Windows"];
+                            current: SimState.port-preset;
+                            small: true;
+                            changed(i) => { SimState.port-preset-picked(i); }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    if SimState.port-warning != "": Text {
+                        text: SimState.port-warning;
+                        color: Theme.warning;
+                        font-size: Theme.fs-s;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Label { text: "Scope"; width: 50px; }
+                        Segmented {
+                            items: ["local · this PC", "global · LAN"];
+                            current <=> SimState.scope;
+                            small: true;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Button {
+                            text: "Configure SimConnect.xml";
+                            icon: Icons.wrench;
+                            kind: ButtonKind.primary;
+                            clicked => { SimState.configure(); }
+                        }
+                        if SimState.can-sync: Button {
+                            text: "Use port " + SimState.cfg-port + " to connect";
+                            kind: ButtonKind.ghost;
+                            clicked => { SimState.sync-port(); }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    if SimState.message != "": Panel {
+                        tone: SimState.message-ok ? Theme.success : Theme.danger;
+                        Text {
+                            text: SimState.message;
+                            color: SimState.message-ok ? Theme.success : Theme.danger;
+                            font-size: Theme.fs-s;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+
+            Card {
+                SectionTitle {
+                    title: "Unattended connection engine";
+                    subtitle: "Three ways AeroDeck reaches MSFS under Proton, tried in order";
+                    icon: Icons.activity;
+                    tone: Theme.violet;
+                }
+                HorizontalLayout {
+                    spacing: 12px;
+                    for t[i] in [
+                        { title: "Auto-provisioned TCP", text: "Port 45454 is written into SimConnect.xml on startup." },
+                        { title: "Live socket scanner", text: "Finds MSFS's dynamic IPv4 listener through /proc, even before a restart." },
+                        { title: "Wine named-pipe relay", text: "A 7.5 KB Win64 helper bridges the SimConnect pipe to TCP if IPv4 is off." },
+                    ]: Panel {
+                        horizontal-stretch: 1;
+                        min-height: 118px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Pill { text: "TIER " + (i + 1); tone: Theme.violet; }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        Text {
+                            text: t.title;
+                            color: Theme.text;
+                            font-size: Theme.fs-m;
+                            font-weight: 650;
+                        }
+                        Hint { text: t.text; }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    if SimState.helper-staged: VerticalLayout {
+                        alignment: center;
+                        Pill { text: "pipe bridge staged"; tone: Theme.success; dot: true; }
+                    }
+                    if SimState.wine-path != "": Mono {
+                        text: SimState.wine-path;
+                        color: Theme.text-3;
+                        font-size: Theme.fs-xs;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    if SimState.wine-path == "": Rectangle { horizontal-stretch: 1; }
+                    Button {
+                        text: "Self-test pipe bridge";
+                        icon: Icons.zap;
+                        small: true;
+                        kind: ButtonKind.ghost;
+                        clicked => { SimState.self-test(); }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 14px;
+                Card {
+                    horizontal-stretch: 1;
+                    SectionTitle { title: "SimConnect.xml"; subtitle: "Server side, in MSFS AppData\\Roaming"; icon: Icons.braces; }
+                    CodeBlock { text: SimState.xml-preview; }
+                }
+                Card {
+                    horizontal-stretch: 1;
+                    SectionTitle { title: "SimConnect.cfg"; subtitle: "Client side, for remote or third-party tools"; icon: Icons.braces; }
+                    CodeBlock { text: SimState.cfg-preview; }
+                    if SimState.steam-libs.length > 0: Caption { text: "STEAM LIBRARIES"; }
+                    for lib in SimState.steam-libs: Mono { text: lib; color: Theme.text-2; font-size: Theme.fs-xs; overflow: elide; }
+                }
+            }
+        }
+    }
+}

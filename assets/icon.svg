@@ -1,46 +1,52 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <!-- AeroDeck App Icon: Flight Controller & Telemetry Engine -->
-  <!-- Base Squircle -->
-  <rect width="512" height="512" rx="116" fill="#0D1117" />
-  <rect x="14" y="14" width="484" height="484" rx="104" fill="none" stroke="#1E293B" stroke-width="12" />
-
-  <!-- Unibody Flight Control Yoke Frame -->
-  <path d="M 96 160 L 96 300 C 96 390 176 428 256 428 C 336 428 416 390 416 300 L 416 160"
-        fill="none" stroke="#0284C7" stroke-width="48" stroke-linecap="round" stroke-linejoin="round" />
-
-  <!-- Yoke Handle Ergonomic Grip Highlights -->
-  <path d="M 96 160 L 96 228" fill="none" stroke="#38BDF8" stroke-width="48" stroke-linecap="round" />
-  <path d="M 416 160 L 416 228" fill="none" stroke="#38BDF8" stroke-width="48" stroke-linecap="round" />
-
-  <!-- Left Hat / Control Switch (Amber) -->
-  <circle cx="96" cy="140" r="16" fill="#F59E0B" stroke="#0D1117" stroke-width="4" />
-
-  <!-- Right Autopilot Master Switch (Emerald Green) -->
-  <circle cx="416" cy="140" r="16" fill="#10B981" stroke="#0D1117" stroke-width="4" />
-
-  <!-- Central Ascending Supersonic Aircraft (Vibrant Sky Blue) -->
-  <path d="M 256 68
-           L 276 160
-           L 368 256
-           L 348 280
-           L 280 248
-           L 280 344
-           L 320 376
-           L 310 394
-           L 256 380
-           L 202 394
-           L 192 376
-           L 232 344
-           L 232 248
-           L 164 280
-           L 144 256
-           L 236 160
-           Z"
-        fill="#38BDF8" />
-
-  <!-- Avionics Gimbal / Artificial Horizon Reticle -->
-  <circle cx="256" cy="228" r="32" fill="#0D1117" stroke="#38BDF8" stroke-width="8" />
-  <line x1="234" y1="228" x2="278" y2="228" stroke="#38BDF8" stroke-width="6" stroke-linecap="round" />
-  <line x1="256" y1="210" x2="256" y2="220" stroke="#38BDF8" stroke-width="5" stroke-linecap="round" />
-  <circle cx="256" cy="228" r="7" fill="#10B981" />
+  <!-- AeroDeck: stylised attitude indicator -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#18304a"/>
+      <stop offset="1" stop-color="#050a12"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.3" r="0.75">
+      <stop offset="0" stop-color="#22d3ee" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7dd3fc"/>
+      <stop offset="1" stop-color="#0284c7"/>
+    </linearGradient>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7c4a1c"/>
+      <stop offset="1" stop-color="#2a1708"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e2e8f0" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#475569" stop-opacity="0.6"/>
+    </linearGradient>
+    <clipPath id="dial"><circle cx="256" cy="256" r="148"/></clipPath>
+  </defs>
+  <rect width="512" height="512" rx="114" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="114" fill="url(#glow)"/>
+  <rect x="5" y="5" width="502" height="502" rx="109" fill="none" stroke="#ffffff" stroke-opacity="0.09" stroke-width="4"/>
+  <g clip-path="url(#dial)">
+    <g transform="rotate(-16 256 256)">
+      <rect x="40" y="40" width="432" height="236" fill="url(#sky)"/>
+      <rect x="40" y="276" width="432" height="200" fill="url(#ground)"/>
+      <line x1="40" y1="276" x2="472" y2="276" stroke="#f8fafc" stroke-width="6"/>
+      <g stroke="#f8fafc" stroke-width="5" stroke-linecap="round">
+        <line x1="228" y1="236" x2="284" y2="236" stroke-opacity="0.9"/>
+        <line x1="206" y1="196" x2="306" y2="196" stroke-opacity="0.9"/>
+        <line x1="228" y1="316" x2="284" y2="316" stroke-opacity="0.55"/>
+        <line x1="206" y1="356" x2="306" y2="356" stroke-opacity="0.55"/>
+      </g>
+    </g>
+  </g>
+  <circle cx="256" cy="256" r="148" fill="none" stroke="url(#rim)" stroke-width="9"/>
+  <g stroke="#e2e8f0" stroke-opacity="0.75" stroke-width="7" stroke-linecap="round">
+    <line x1="103.6" y1="168.0" x2="86.3" y2="158.0"/><line x1="131.5" y1="131.5" x2="123.1" y2="123.1"/><line x1="168.0" y1="103.6" x2="158.0" y2="86.3"/><line x1="195.8" y1="90.6" x2="191.7" y2="79.3"/><line x1="225.4" y1="82.7" x2="223.4" y2="70.9"/><line x1="286.6" y1="82.7" x2="288.6" y2="70.9"/><line x1="316.2" y1="90.6" x2="320.3" y2="79.3"/><line x1="344.0" y1="103.6" x2="354.0" y2="86.3"/><line x1="380.5" y1="131.5" x2="388.9" y2="123.1"/><line x1="408.4" y1="168.0" x2="425.7" y2="158.0"/>
+  </g>
+  <path d="M256 66 L271 92 L241 92 Z" fill="#fbbf24"/>
+  <g fill="#fbbf24" stroke="#0b1220" stroke-width="7" stroke-linejoin="round">
+    <path d="M128 246 H204 L224 274 H200 L189 260 H128 Z"/>
+    <path d="M384 246 H308 L288 274 H312 L323 260 H384 Z"/>
+    <rect x="242" y="242" width="28" height="28" rx="6"/>
+  </g>
 </svg>

@@ -1,0 +1,467 @@
+// Data shared between the Rust controller and the pages. Rust fills the `in` properties and
+// models and handles the callbacks; text fields are `in-out` and read back by Rust on submit.
+
+import { BarSeg, BarMark } from "components/base.slint";
+export { BarSeg, BarMark }
+
+export struct DeviceItem {
+    name: string,
+    vidpid: string,
+    category: string,
+    mapped: int,
+    buttons: int,
+    axes: int,
+    live: bool,
+}
+
+export struct FeedItem {
+    time: string,
+    device: string,
+    input: string,
+    value: string,
+    axis: bool,
+}
+
+export struct InputItem {
+    id: string,
+    label: string,
+    kind: int, // 0 button, 1 axis, 2 hat
+    summary: string,
+    count: int,
+    live: bool,
+}
+
+export struct ActionItem {
+    trigger: string,
+    title: string,
+    detail: string,
+    kind: int, // 0 SimConnect, 1 LVAR, 2 RPN, 3 axis, 4 lever, 5 PMDG, 6 other
+    condition: string,
+    def-index: int,
+    act-index: int,
+    testable: bool,
+}
+
+export struct ZoneItem {
+    range: string,
+    deadzone: string,
+    frozen: bool,
+    enter: string,
+    leave: string,
+    key: string,
+}
+
+export struct LeverRow {
+    key: string,
+    label: string,
+    tone: int,
+    from: string,
+    to: string,
+}
+
+export struct PickItem {
+    name: string,
+    detail: string,
+}
+
+export struct ProfileItem {
+    path: string,
+    name: string,
+    patterns: string,
+    devices: int,
+    inputs: int,
+    active: bool,
+    fallback: bool,
+}
+
+export struct LayoutDevice {
+    name: string,
+    vidpid: string,
+    mapped: int,
+}
+
+export struct AircraftItem {
+    title: string,
+    model: string,
+    checked: bool,
+    already: bool,
+}
+
+export struct SnippetItem {
+    id: int,
+    name: string,
+    author: string,
+    version: string,
+    downloads: int,
+    rating: int,
+    aircraft: string,
+}
+
+export struct VarRow {
+    name: string,
+    value: string,
+    waiting: bool,
+}
+
+export struct PmdgRow {
+    label: string,
+    package: string,
+    status: string,
+    tone: int,
+}
+
+export struct LogItem {
+    time: string,
+    level: string,
+    text: string,
+    tone: int,
+}
+
+export struct PortItem {
+    port: int,
+    scope: string,
+    active: bool,
+}
+
+export global AppState {
+    in-out property <int> page: 0;
+    in property <string> version;
+
+    in property <bool> connected;
+    in property <string> sim-endpoint;
+    in property <string> aircraft: "No aircraft detected";
+    in property <bool> aircraft-detected;
+    in property <bool> auto-matched;
+    in property <string> profile-name: "No profile";
+    in property <string> profile-meta;
+    in property <bool> dirty;
+    in property <[string]> profile-names;
+    in property <int> profile-index: -1;
+    in property <bool> bridge-active;
+    in property <int> lvar-count;
+    in property <bool> proton-ready;
+    in property <int> pmdg-tone;
+    in property <string> pmdg-status;
+
+    in property <string> last-input: "Waiting for hardware input";
+    in property <bool> input-live;
+    in property <[FeedItem]> feed;
+    in property <[DeviceItem]> devices;
+
+    in-out property <string> toast-text;
+    in-out property <int> toast-tone: 2;
+    in-out property <int> toast-serial;
+    in-out property <bool> show-about;
+
+    callback navigate(int);
+    callback select-profile(int);
+    callback save-profile();
+    callback toggle-theme();
+    callback rescan-devices();
+    callback open-device(int);
+    callback quick-connect();
+    callback open-url(string);
+}
+
+export global MappingState {
+    in property <bool> no-devices;
+    in property <[DeviceItem]> devices;
+    in-out property <int> device-index;
+    callback select-device(int);
+
+    in-out property <string> query;
+    in-out property <int> filter: 0;
+    in-out property <bool> follow: true;
+    in property <[InputItem]> inputs;
+    in property <int> input-total;
+    callback refilter();
+
+    in property <string> selected-input;
+    in property <string> selected-label;
+    in property <string> device-name;
+    in property <string> device-meta;
+    in property <bool> is-axis;
+    in property <bool> is-hat;
+    callback select-input(string);
+    callback deselect();
+
+    // Axis: 0 = sim axis event, 1 = calibrated lever
+    in-out property <int> axis-mode;
+    callback axis-mode-changed(int);
+    in property <bool> has-live;
+    in property <[BarSeg]> axis-segments;
+    in property <[BarMark]> axis-marks;
+    in property <float> axis-live;
+    in property <string> axis-readout;
+    in property <string> axis-raw;
+    in property <string> axis-current;
+    in-out property <bool> axis-invert;
+    in property <[string]> axis-presets;
+    in-out property <int> axis-preset;
+    callback invert-changed();
+    callback apply-axis();
+
+    // Calibrated lever
+    in property <[string]> lever-kinds;
+    in-out property <int> lever-kind;
+    callback lever-kind-changed(int);
+    in property <bool> lever-per-engine;
+    in property <[bool]> engines;
+    callback toggle-engine(int);
+    in property <bool> lever-saved;
+    in property <bool> lever-reverse;
+    in property <[BarSeg]> lever-segments;
+    in property <[BarMark]> lever-marks;
+    in property <float> lever-live;
+    in property <string> lever-percent: "--";
+    in property <string> lever-raw;
+    in property <string> lever-sends;
+    in property <string> lever-state;
+    in property <int> lever-state-tone;
+    in property <[LeverRow]> lever-rows;
+    callback lever-edit(string, bool, string);
+    callback lever-set-here(string);
+    in-out property <float> lever-gate;
+    callback gate-changed(float);
+    callback save-lever();
+    callback reset-lever();
+
+    // Trigger zones
+    in property <[BarSeg]> zone-segments;
+    in property <[BarMark]> zone-marks;
+    in property <float> zone-live;
+    in property <string> zone-readout;
+    in property <[ZoneItem]> zones;
+    callback delete-zone(string);
+    in-out property <string> zone-from: "0";
+    in-out property <string> zone-to: "8";
+    in-out property <float> zone-deadzone: 4;
+    in property <[string]> zone-presets;
+    in-out property <int> zone-preset;
+    in-out property <string> zone-enter;
+    in-out property <string> zone-leave;
+    in property <string> zone-error;
+    callback zone-here(bool);
+    callback zone-preset-changed(int);
+    callback zone-draft-changed();
+    callback add-zone();
+
+    // Configured actions
+    in property <[ActionItem]> actions;
+    callback delete-action(int, int);
+    callback test-action(int, int);
+
+    // Add-action form
+    in-out property <bool> show-add;
+    callback open-add();
+    in property <[string]> trigger-labels;
+    in-out property <int> trigger-index;
+    callback trigger-changed(int);
+    in property <[string]> hat-labels;
+    in-out property <int> hat-index;
+    in property <bool> zone-trigger;
+    in property <[string]> zone-options;
+    in-out property <int> zone-option;
+    in property <[string]> action-types;
+    in-out property <int> action-type;
+    callback action-type-changed(int);
+    // 0 SimConnect, 1 PMDG, 2 LVAR, 3 RPN
+    in property <int> action-kind;
+
+    in-out property <string> event-query;
+    in-out property <string> action-value: "1";
+    in property <[string]> event-categories;
+    in-out property <int> event-category;
+    in property <[PickItem]> event-list;
+    in property <string> event-hint;
+    callback event-filter-changed();
+    callback pick-event(string);
+
+    in property <[string]> pmdg-families;
+    in-out property <int> pmdg-family;
+    in-out property <string> pmdg-query;
+    in property <[string]> pmdg-events;
+    in property <string> pmdg-count;
+    in property <string> pmdg-selected;
+    in property <[string]> pmdg-params;
+    in-out property <int> pmdg-param;
+    callback pmdg-filter-changed();
+    callback pick-pmdg(string);
+
+    in-out property <string> lvar-target;
+    in property <[string]> lvar-suggestions;
+    callback lvar-filter-changed();
+    callback pick-lvar(string);
+
+    in-out property <string> rpn-code;
+    in property <[string]> rpn-templates;
+    callback pick-template(int);
+
+    in-out property <bool> use-condition;
+    in-out property <string> cond-target: "SIMCONNECT:ELECTRICAL MASTER BATTERY";
+    in property <[string]> comparators;
+    in-out property <int> cond-comp;
+    in-out property <string> cond-value: "0";
+
+    callback save-action();
+    callback test-new-action();
+}
+
+export global ProfilesState {
+    in property <bool> auto-switch;
+    callback set-auto-switch(bool);
+    callback import-profile();
+    in-out property <bool> creating;
+    in-out property <string> new-name;
+    callback create();
+
+    in property <[ProfileItem]> profiles;
+    in-out property <string> search;
+    callback search-changed();
+    in property <string> selected-path;
+    callback select(string);
+    callback activate(string);
+
+    in property <bool> has-selection;
+    in property <string> name;
+    in property <string> file;
+    in property <bool> is-active;
+    in property <bool> is-fallback;
+    in property <string> active-why;
+    in-out property <bool> renaming;
+    in-out property <string> rename-text;
+    callback start-rename();
+    callback rename();
+    callback toggle-fallback();
+    callback duplicate();
+    callback export();
+    in-out property <bool> confirm-delete;
+    callback delete();
+
+    in property <[string]> patterns;
+    callback remove-pattern(string);
+    in-out property <string> new-pattern;
+    callback add-pattern();
+
+    in-out property <bool> picker-open;
+    callback toggle-picker();
+    in-out property <string> picker-query;
+    in property <[AircraftItem]> picker-items;
+    in property <int> picker-count;
+    in property <int> picker-visible;
+    callback picker-filter-changed();
+    callback picker-toggle(string);
+    callback picker-select-all();
+    callback picker-clear();
+    callback picker-add();
+
+    in property <[LayoutDevice]> layout-devices;
+    in property <[string]> layout-device-names;
+    in-out property <int> layout-index;
+    callback select-layout(int);
+    in property <[string]> addable-devices;
+    callback add-device(int);
+    in property <bool> has-layout;
+    in property <string> layout-name;
+    in property <string> layout-vidpid;
+    in property <int> layout-mapped;
+    callback remove-device();
+    callback clear-layout();
+    in property <bool> can-undo-clear;
+    callback undo-clear();
+
+    in-out property <bool> snippets-open;
+    callback toggle-snippets();
+    in-out property <string> snippet-search;
+    in-out property <bool> snippet-match: true;
+    callback snippet-filter-changed();
+    callback refresh-catalog();
+    in property <[SnippetItem]> snippets;
+    in property <bool> fetching;
+    in property <bool> importing;
+    in property <string> snippets-empty;
+    callback import-snippet(int);
+    callback import-local-snippet();
+    in property <bool> can-undo-snippet;
+    callback undo-snippet();
+}
+
+export global VarsState {
+    in property <[PmdgRow]> pmdg;
+    in property <bool> pmdg-any-off;
+    callback enable-broadcast();
+
+    in property <bool> bridge-active;
+    in property <int> lvar-count;
+    callback rescan-lvars();
+    in-out property <string> lvar-name: "XMLVAR_Pitot_Heat_State";
+    in-out property <string> lvar-value: "1";
+    callback set-lvar();
+    in-out property <string> rpn: "(>K:TOGGLE_MASTER_BATTERY)";
+    callback run-rpn();
+    in-out property <string> simvar-name: "NAV STANDBY FREQUENCY:1";
+    in-out property <string> simvar-value: "110.50";
+    callback watch-simvar();
+    callback set-simvar();
+
+    in-out property <string> filter;
+    callback filter-changed();
+    in property <[VarRow]> simvars;
+    in property <[VarRow]> lvars;
+    callback pick-simvar(string);
+    callback pick-lvar(string);
+}
+
+export global SimState {
+    in property <bool> connected;
+    in property <string> status;
+    in-out property <string> host: "127.0.0.1";
+    in-out property <string> port: "45454";
+    callback connect();
+    callback disconnect();
+
+    in-out property <string> prefix;
+    in property <bool> prefix-found;
+    in property <string> roaming-path;
+    // 0 prefix missing, 1 SimConnect.xml missing, 2 no static port, 3 configured
+    in property <int> xml-state;
+    in property <[PortItem]> ports;
+    in property <string> privileged-warning;
+    callback use-port(int);
+    callback browse();
+    callback auto-detect();
+    callback prefix-edited();
+
+    in-out property <string> cfg-port: "45454";
+    in-out property <int> scope;
+    in property <int> port-preset: -1;
+    callback port-preset-picked(int);
+    callback cfg-port-edited();
+    in property <string> port-warning;
+    callback configure();
+    in property <bool> can-sync;
+    callback sync-port();
+
+    in property <string> message;
+    in property <bool> message-ok;
+
+    in property <bool> helper-staged;
+    in property <string> wine-path;
+    callback self-test();
+    in property <[string]> steam-libs;
+    in property <string> xml-preview;
+    in property <string> cfg-preview;
+}
+
+export global LogsState {
+    in property <[LogItem]> logs;
+    in-out property <bool> autoscroll: true;
+    in-out property <int> level-filter;
+    in-out property <string> query;
+    in property <int> total;
+    in property <int> errors;
+    in property <int> warnings;
+    in-out property <int> scroll-serial;
+    callback filter-changed();
+    callback clear();
+}

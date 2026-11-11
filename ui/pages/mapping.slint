@@ -1,0 +1,1040 @@
+import { ScrollView, ListView } from "std-widgets.slint";
+import { Theme, Icons } from "../theme.slint";
+import {
+    Button, ButtonKind, IconButton, Card, Panel, SectionTitle, Pill, Dot, Ico, IconTile, EmptyState, Mono, Hint,
+    Label, Caption, Field, Segmented, Select, Toggle, Check, Slider, TrackBar, Row, Divider
+} from "../components/base.slint";
+import { MappingState, AppState, PickItem } from "../state.slint";
+import { Helpers } from "common.slint";
+
+component DeviceList inherits Card {
+    pad: 12px;
+    gap: 6px;
+    HorizontalLayout {
+        padding-left: 4px;
+        Caption { text: "CONTROLLERS"; horizontal-stretch: 1; }
+        IconButton {
+            icon: Icons.refresh;
+            size: 24px;
+            clicked => { AppState.rescan-devices(); }
+        }
+    }
+    for d[i] in MappingState.devices: Row {
+        height: 46px;
+        selected: i == MappingState.device-index;
+        flash: d.live;
+        clicked => { MappingState.select-device(i); }
+        VerticalLayout {
+            alignment: center;
+            IconTile { icon: Helpers.device-icon(d.category); size: 28px; tone: i == MappingState.device-index ? Theme.accent : Theme.text-2; }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: d.name;
+                color: i == MappingState.device-index ? Theme.text : Theme.text-2;
+                font-size: Theme.fs-m;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: d.mapped > 0 ? d.mapped + " inputs mapped" : "nothing mapped yet";
+                color: d.mapped > 0 ? Theme.success : Theme.text-3;
+                font-size: Theme.fs-xs;
+            }
+        }
+    }
+}
+
+component InputList inherits Card {
+    fill: true;
+    pad: 12px;
+    gap: 8px;
+    Field {
+        text <=> MappingState.query;
+        placeholder: "Search inputs or bindings";
+        icon: Icons.search;
+        clearable: true;
+        edited => { MappingState.refilter(); }
+    }
+    Segmented {
+        items: ["All", "Buttons", "Axes", "Mapped"];
+        current <=> MappingState.filter;
+        small: true;
+        stretch: true;
+        changed => { MappingState.refilter(); }
+    }
+    HorizontalLayout {
+        padding-left: 2px;
+        Check {
+            text: "Follow hardware";
+            checked <=> MappingState.follow;
+            text-color: Theme.text-2;
+        }
+        Text {
+            text: MappingState.inputs.length + " / " + MappingState.input-total;
+            color: Theme.text-3;
+            font-size: Theme.fs-xs;
+            vertical-alignment: center;
+        }
+    }
+    ListView {
+        vertical-stretch: 1;
+        min-height: 200px;
+        for inp in MappingState.inputs: Rectangle {
+            height: 42px;
+            Row {
+                y: 2px;
+                height: 38px;
+                selected: inp.id == MappingState.selected-input;
+                flash: inp.live;
+                clicked => { MappingState.select-input(inp.id); }
+                VerticalLayout {
+                    alignment: center;
+                    Ico {
+                        source: inp.kind == 1 ? Icons.sliders : inp.kind == 2 ? Icons.crosshair : Icons.button;
+                        size: 15px;
+                        tint: inp.live ? Theme.success : inp.count > 0 ? Theme.accent : Theme.text-3;
+                    }
+                }
+                Text {
+                    text: inp.label;
+                    color: inp.id == MappingState.selected-input ? Theme.text : inp.count > 0 ? Theme.text : Theme.text-2;
+                    font-size: Theme.fs-m;
+                    font-weight: inp.count > 0 ? 600 : 500;
+                    vertical-alignment: center;
+                    min-width: 70px;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: inp.summary;
+                    color: Theme.text-3;
+                    font-size: Theme.fs-s;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if inp.count > 1: VerticalLayout {
+                    alignment: center;
+                    Pill { text: "+" + (inp.count - 1); tone: Theme.accent; }
+                }
+            }
+        }
+    }
+}
+
+component AxisCard inherits Card {
+    HorizontalLayout {
+        SectionTitle {
+            title: "Sim axis";
+            subtitle: "Send the axis position to one simulator axis event";
+            icon: Icons.sliders;
+        }
+        if MappingState.axis-current != "": VerticalLayout {
+            alignment: center;
+            Pill { text: MappingState.axis-current; tone: Theme.success; mono: true; }
+        }
+    }
+    TrackBar {
+        segments: MappingState.axis-segments;
+        marks: MappingState.axis-marks;
+        live: MappingState.axis-live;
+        live-visible: MappingState.has-live;
+        labels: false;
+    }
+    HorizontalLayout {
+        spacing: 10px;
+        Text {
+            text: MappingState.axis-readout;
+            color: Theme.accent;
+            font-size: Theme.fs-xxl;
+            font-weight: 700;
+            font-family: Theme.mono;
+        }
+        Mono { text: MappingState.axis-raw; color: Theme.text-3; horizontal-stretch: 1; }
+    }
+    HorizontalLayout {
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            Toggle {
+                text: "Invert";
+                checked <=> MappingState.axis-invert;
+                toggled => { MappingState.invert-changed(); }
+            }
+        }
+        Select {
+            horizontal-stretch: 1;
+            items: MappingState.axis-presets;
+            current <=> MappingState.axis-preset;
+            icon: Icons.target;
+        }
+        Button {
+            text: "Apply axis";
+            icon: Icons.check;
+            kind: ButtonKind.primary;
+            clicked => { MappingState.apply-axis(); }
+        }
+    }
+}
+
+component LeverCard inherits Card {
+    HorizontalLayout {
+        spacing: 10px;
+        SectionTitle {
+            title: "Calibrated lever";
+            subtitle: "Move the lever, then mark its full, idle and reverse positions";
+            icon: Icons.lever;
+        }
+        if MappingState.lever-saved: VerticalLayout {
+            alignment: center;
+            Pill { text: "saved in profile"; tone: Theme.success; dot: true; }
+        }
+    }
+    HorizontalLayout {
+        spacing: 12px;
+        Select {
+            width: 220px;
+            items: MappingState.lever-kinds;
+            current <=> MappingState.lever-kind;
+            icon: Icons.lever;
+            changed(i) => { MappingState.lever-kind-changed(i); }
+        }
+        if MappingState.lever-per-engine: HorizontalLayout {
+            spacing: 10px;
+            Label { text: "Engines"; }
+            for on[i] in MappingState.engines: Rectangle {
+                width: 32px;
+                height: 32px;
+                border-radius: Theme.radius-m;
+                background: on ? Theme.accent.with-alpha(0.16) : eta.has-hover ? Theme.surface-3 : Theme.surface-2;
+                border-width: 1px;
+                border-color: on ? Theme.accent : Theme.border;
+                animate background { duration: 120ms; }
+                Text {
+                    text: i + 1;
+                    color: on ? Theme.accent : Theme.text-2;
+                    font-weight: 700;
+                    font-size: Theme.fs-m;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                eta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { MappingState.toggle-engine(i); }
+                }
+            }
+            Hint { text: "none = all"; vertical-alignment: center; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    TrackBar {
+        segments: MappingState.lever-segments;
+        marks: MappingState.lever-marks;
+        live: MappingState.lever-live;
+        live-visible: MappingState.has-live;
+        track-height: 34px;
+    }
+    HorizontalLayout {
+        spacing: 16px;
+        Text {
+            text: MappingState.lever-percent;
+            color: MappingState.lever-state-tone == 4 ? Theme.danger : Theme.accent;
+            font-size: 34px;
+            font-weight: 750;
+            font-family: Theme.mono;
+            vertical-alignment: center;
+            min-width: 110px;
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 3px;
+            Mono { text: MappingState.lever-raw; color: Theme.text-3; }
+            Text {
+                text: MappingState.lever-sends;
+                color: Theme.text-2;
+                font-size: Theme.fs-s;
+                overflow: elide;
+            }
+            if MappingState.lever-state != "": Text {
+                text: MappingState.lever-state;
+                color: Theme.tone(MappingState.lever-state-tone);
+                font-size: Theme.fs-s;
+                font-weight: 600;
+            }
+        }
+    }
+    Panel {
+        pad: 6px;
+        gap: 0px;
+        for r[i] in MappingState.lever-rows: Rectangle {
+            height: 44px;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 6px;
+                spacing: 10px;
+                VerticalLayout {
+                    alignment: center;
+                    Dot { tone: Theme.tone(r.tone); glow: true; }
+                }
+                Text {
+                    text: r.label;
+                    color: Theme.text;
+                    font-size: Theme.fs-m;
+                    font-weight: 650;
+                    vertical-alignment: center;
+                    width: 80px;
+                }
+                Label { text: "from"; }
+                VerticalLayout {
+                    alignment: center;
+                    Field {
+                        width: 96px;
+                        text: r.from;
+                        mono: true;
+                        input-type: InputType.number;
+                        edited(t) => { MappingState.lever-edit(r.key, false, t); }
+                    }
+                }
+                Label { text: "to"; }
+                VerticalLayout {
+                    alignment: center;
+                    Field {
+                        width: 96px;
+                        text: r.to;
+                        mono: true;
+                        input-type: InputType.number;
+                        edited(t) => { MappingState.lever-edit(r.key, true, t); }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                VerticalLayout {
+                    alignment: center;
+                    Button {
+                        text: "Set here";
+                        icon: Icons.target;
+                        small: true;
+                        kind: ButtonKind.accent;
+                        enabled: MappingState.has-live;
+                        clicked => { MappingState.lever-set-here(r.key); }
+                    }
+                }
+            }
+            if i < MappingState.lever-rows.length - 1: Divider {
+                y: parent.height - 1px;
+                x: 8px;
+                width: parent.width - 16px;
+            }
+        }
+    }
+    if MappingState.lever-reverse: Panel {
+        tone: Theme.danger;
+        HorizontalLayout {
+            spacing: 12px;
+            Text {
+                text: "Reverse gate";
+                color: Theme.danger;
+                font-weight: 650;
+                font-size: Theme.fs-m;
+                vertical-alignment: center;
+            }
+            Slider {
+                value <=> MappingState.lever-gate;
+                minimum: 0;
+                maximum: 60;
+                tone: Theme.danger;
+                changed(v) => { MappingState.gate-changed(v); }
+            }
+            Mono {
+                text: Math.round(MappingState.lever-gate) + "%";
+                color: Theme.danger;
+                width: 40px;
+                horizontal-alignment: right;
+            }
+        }
+        Hint { text: "Travel past the idle detent that still reads idle: resting a hand on the lever won't deploy the reversers. Reverse engages beyond it and releases a few percent before it."; }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Button {
+            text: "Save lever";
+            icon: Icons.save;
+            kind: ButtonKind.primary;
+            clicked => { MappingState.save-lever(); }
+        }
+        Button {
+            text: "Reset";
+            icon: Icons.undo;
+            kind: ButtonKind.ghost;
+            clicked => { MappingState.reset-lever(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+}
+
+component ZonesCard inherits Card {
+    SectionTitle {
+        title: "Trigger zones";
+        subtitle: "Fire events when the lever enters or leaves a range, e.g. spoilers ARM";
+        icon: Icons.target;
+        tone: Theme.violet;
+    }
+    TrackBar {
+        segments: MappingState.zone-segments;
+        marks: MappingState.zone-marks;
+        live: MappingState.zone-live;
+        live-visible: MappingState.has-live;
+        labels: false;
+        track-height: 22px;
+    }
+    if MappingState.zone-readout != "": Mono { text: MappingState.zone-readout; color: Theme.text-2; }
+    for z in MappingState.zones: Panel {
+        pad: 10px;
+        HorizontalLayout {
+            spacing: 8px;
+            VerticalLayout {
+                alignment: center;
+                Pill { text: z.range; tone: Theme.violet; mono: true; }
+            }
+            VerticalLayout {
+                alignment: center;
+                Pill { text: z.deadzone; tone: z.frozen ? Theme.warning : Theme.text-3; }
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 2px;
+                Text {
+                    text: "enter → " + z.enter;
+                    color: Theme.text;
+                    font-size: Theme.fs-s;
+                    overflow: elide;
+                }
+                Text {
+                    text: "leave → " + z.leave;
+                    color: Theme.text-2;
+                    font-size: Theme.fs-s;
+                    overflow: elide;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: Icons.trash;
+                    tint: Theme.danger;
+                    clicked => { MappingState.delete-zone(z.key); }
+                }
+            }
+        }
+    }
+    Panel {
+        Caption { text: "NEW ZONE"; color: Theme.violet; }
+        HorizontalLayout {
+            spacing: 8px;
+            Label { text: "From"; }
+            Field {
+                width: 80px;
+                horizontal-stretch: 0;
+                text <=> MappingState.zone-from;
+                mono: true;
+                edited => { MappingState.zone-draft-changed(); }
+            }
+            Button {
+                text: "Lever here";
+                small: true;
+                kind: ButtonKind.ghost;
+                enabled: MappingState.has-live;
+                y: 3px;
+                clicked => { MappingState.zone-here(false); }
+            }
+            Label { text: "To"; }
+            Field {
+                width: 80px;
+                horizontal-stretch: 0;
+                text <=> MappingState.zone-to;
+                mono: true;
+                edited => { MappingState.zone-draft-changed(); }
+            }
+            Button {
+                text: "Lever here";
+                small: true;
+                kind: ButtonKind.ghost;
+                enabled: MappingState.has-live;
+                y: 3px;
+                clicked => { MappingState.zone-here(true); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            Label { text: "Deadzone"; width: 64px; }
+            Slider {
+                value <=> MappingState.zone-deadzone;
+                minimum: 0;
+                maximum: 15;
+                step: 0.5;
+                tone: Theme.warning;
+                changed => { MappingState.zone-draft-changed(); }
+            }
+            Mono { text: MappingState.zone-deadzone + "%"; width: 44px; horizontal-alignment: right; color: Theme.warning; }
+        }
+        Hint { text: "The axis output stays frozen this far around the zone; the rest of the travel is stretched to the full range."; }
+        HorizontalLayout {
+            spacing: 8px;
+            Select {
+                width: 190px;
+                items: MappingState.zone-presets;
+                current <=> MappingState.zone-preset;
+                changed(i) => { MappingState.zone-preset-changed(i); }
+            }
+            Field {
+                text <=> MappingState.zone-enter;
+                placeholder: "On enter (sim event)";
+                mono: true;
+            }
+            Field {
+                text <=> MappingState.zone-leave;
+                placeholder: "On leave (sim event)";
+                mono: true;
+            }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            Button {
+                text: "Add zone";
+                icon: Icons.plus;
+                kind: ButtonKind.accent;
+                enabled: MappingState.zone-error == "";
+                clicked => { MappingState.add-zone(); }
+            }
+            if MappingState.zone-error != "": Text {
+                text: MappingState.zone-error;
+                color: Theme.warning;
+                font-size: Theme.fs-s;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        Hint { text: "For PMDG events, LVARs or scripts, add the zone, then more actions below with the Zone enter / Zone leave trigger."; }
+    }
+}
+
+component PickList inherits Rectangle {
+    in property <[PickItem]> items;
+    in property <string> selected;
+    in property <string> empty-text;
+    callback picked(string);
+    height: 190px;
+    border-radius: Theme.radius-m;
+    background: Theme.bg;
+    border-width: 1px;
+    border-color: Theme.border;
+    clip: true;
+    if root.items.length == 0: Text {
+        x: 12px;
+        y: 10px;
+        width: parent.width - 24px;
+        text: root.empty-text;
+        color: Theme.text-3;
+        font-size: Theme.fs-s;
+        wrap: word-wrap;
+    }
+    ListView {
+        x: 4px;
+        y: 4px;
+        width: parent.width - 8px;
+        height: parent.height - 8px;
+        for it in root.items: Rectangle {
+            height: 28px;
+            border-radius: Theme.radius-s;
+            background: it.name == root.selected ? Theme.accent.with-alpha(0.15) : pta.has-hover ? Theme.hover : transparent;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 8px;
+                Mono {
+                    horizontal-stretch: 1;
+                    text: it.name;
+                    color: it.name == root.selected ? Theme.accent : Theme.text;
+                    overflow: elide;
+                }
+                Text {
+                    text: it.detail;
+                    color: Theme.text-3;
+                    font-size: Theme.fs-xs;
+                    vertical-alignment: center;
+                }
+            }
+            pta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.picked(it.name); }
+            }
+        }
+    }
+}
+
+component AddActionForm inherits Panel {
+    tone: Theme.accent;
+    pad: 14px;
+    gap: 12px;
+    HorizontalLayout {
+        Text {
+            horizontal-stretch: 1;
+            text: "New action";
+            color: Theme.accent;
+            font-size: Theme.fs-l;
+            font-weight: 700;
+        }
+        IconButton {
+            icon: Icons.x;
+            clicked => { MappingState.show-add = false; }
+        }
+    }
+    if MappingState.is-hat: VerticalLayout {
+        spacing: 6px;
+        Caption { text: "DIRECTION"; }
+        Segmented {
+            items: MappingState.hat-labels;
+            current <=> MappingState.hat-index;
+            small: true;
+        }
+    }
+    VerticalLayout {
+        spacing: 6px;
+        Caption { text: "TRIGGER"; }
+        Segmented {
+            items: MappingState.trigger-labels;
+            current <=> MappingState.trigger-index;
+            small: true;
+            changed(i) => { MappingState.trigger-changed(i); }
+        }
+    }
+    if MappingState.zone-trigger: VerticalLayout {
+        spacing: 6px;
+        Caption { text: "ZONE"; }
+        Segmented {
+            items: MappingState.zone-options;
+            current <=> MappingState.zone-option;
+            small: true;
+        }
+    }
+    VerticalLayout {
+        spacing: 6px;
+        Caption { text: "ACTION"; }
+        Segmented {
+            items: MappingState.action-types;
+            current <=> MappingState.action-type;
+            changed(i) => { MappingState.action-type-changed(i); }
+        }
+    }
+
+    // SimConnect event
+    if MappingState.action-kind == 0: VerticalLayout {
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 8px;
+            Field {
+                text <=> MappingState.event-query;
+                placeholder: "Search or type an event, e.g. GEAR or AP_MASTER";
+                icon: Icons.search;
+                mono: true;
+                edited => { MappingState.event-filter-changed(); }
+            }
+            Select {
+                width: 170px;
+                items: MappingState.event-categories;
+                current <=> MappingState.event-category;
+                changed => { MappingState.event-filter-changed(); }
+            }
+            Label { text: "Value"; }
+            Field {
+                width: 70px;
+                horizontal-stretch: 0;
+                text <=> MappingState.action-value;
+                mono: true;
+            }
+        }
+        PickList {
+            items: MappingState.event-list;
+            selected: MappingState.event-query;
+            empty-text: MappingState.event-hint;
+            picked(n) => { MappingState.pick-event(n); }
+        }
+    }
+
+    // PMDG event
+    if MappingState.action-kind == 1: VerticalLayout {
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 8px;
+            Segmented {
+                items: MappingState.pmdg-families;
+                current <=> MappingState.pmdg-family;
+                changed => { MappingState.pmdg-filter-changed(); }
+            }
+            Field {
+                text <=> MappingState.pmdg-query;
+                placeholder: "Search events, e.g. MCP HEADING or BATTERY";
+                icon: Icons.search;
+                edited => { MappingState.pmdg-filter-changed(); }
+            }
+            Text {
+                text: MappingState.pmdg-count;
+                color: Theme.text-3;
+                font-size: Theme.fs-s;
+                vertical-alignment: center;
+            }
+        }
+        Rectangle {
+            height: 190px;
+            border-radius: Theme.radius-m;
+            background: Theme.bg;
+            border-width: 1px;
+            border-color: Theme.border;
+            clip: true;
+            ListView {
+                x: 4px;
+                y: 4px;
+                width: parent.width - 8px;
+                height: parent.height - 8px;
+                for name in MappingState.pmdg-events: Rectangle {
+                    height: 26px;
+                    border-radius: Theme.radius-s;
+                    background: name == MappingState.pmdg-selected ? Theme.accent.with-alpha(0.15) : pmta.has-hover ? Theme.hover : transparent;
+                    Mono {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        height: parent.height;
+                        text: name;
+                        color: name == MappingState.pmdg-selected ? Theme.accent : Theme.text;
+                        overflow: elide;
+                    }
+                    pmta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { MappingState.pick-pmdg(name); }
+                    }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            Label { text: "Parameter"; }
+            Segmented {
+                items: MappingState.pmdg-params;
+                current <=> MappingState.pmdg-param;
+                small: true;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if MappingState.pmdg-selected != "": Pill { text: MappingState.pmdg-selected; tone: Theme.accent; mono: true; y: 6px; }
+        }
+    }
+
+    // LVAR
+    if MappingState.action-kind == 2: VerticalLayout {
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 8px;
+            Field {
+                text <=> MappingState.lvar-target;
+                placeholder: "LVAR name, e.g. A32NX_AUTOPILOT_1_ACTIVE";
+                icon: Icons.braces;
+                mono: true;
+                edited => { MappingState.lvar-filter-changed(); }
+            }
+            Label { text: "Value"; }
+            Field {
+                width: 70px;
+                horizontal-stretch: 0;
+                text <=> MappingState.action-value;
+                mono: true;
+            }
+        }
+        if MappingState.lvar-suggestions.length > 0: Rectangle {
+            height: 150px;
+            border-radius: Theme.radius-m;
+            background: Theme.bg;
+            border-width: 1px;
+            border-color: Theme.border;
+            clip: true;
+            ListView {
+                x: 4px;
+                y: 4px;
+                width: parent.width - 8px;
+                height: parent.height - 8px;
+                for name in MappingState.lvar-suggestions: Rectangle {
+                    height: 26px;
+                    border-radius: Theme.radius-s;
+                    background: lta.has-hover ? Theme.hover : transparent;
+                    Mono {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        height: parent.height;
+                        text: name;
+                        overflow: elide;
+                    }
+                    lta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { MappingState.pick-lvar(name); }
+                    }
+                }
+            }
+        }
+        if MappingState.lvar-suggestions.length == 0: Hint { text: "Discovered LVARs show up here once the WASM bridge is connected."; }
+    }
+
+    // RPN calculator code
+    if MappingState.action-kind == 3: VerticalLayout {
+        spacing: 8px;
+        Field {
+            text <=> MappingState.rpn-code;
+            placeholder: "(L:XMLVAR_Baro1_Mode, Number) 1 == if{ ... }";
+            icon: Icons.terminal;
+            mono: true;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Label { text: "Templates"; }
+            Select {
+                width: 300px;
+                items: MappingState.rpn-templates;
+                current: -1;
+                placeholder: "Insert a template…";
+                popup-width: 340px;
+                changed(i) => { MappingState.pick-template(i); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+
+    Divider { }
+    HorizontalLayout {
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            Check {
+                text: "Only when";
+                checked <=> MappingState.use-condition;
+            }
+        }
+        if MappingState.use-condition: Field {
+            text <=> MappingState.cond-target;
+            placeholder: "LVAR or SimVar";
+            mono: true;
+        }
+        if MappingState.use-condition: Select {
+            width: 120px;
+            items: MappingState.comparators;
+            current <=> MappingState.cond-comp;
+        }
+        if MappingState.use-condition: Field {
+            width: 80px;
+            horizontal-stretch: 0;
+            text <=> MappingState.cond-value;
+            mono: true;
+        }
+        if !MappingState.use-condition: Rectangle { horizontal-stretch: 1; }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Button {
+            text: "Save action";
+            icon: Icons.check;
+            kind: ButtonKind.primary;
+            clicked => { MappingState.save-action(); }
+        }
+        Button {
+            text: "Test in sim";
+            icon: Icons.zap;
+            kind: ButtonKind.accent;
+            clicked => { MappingState.test-new-action(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Button {
+            text: "Cancel";
+            kind: ButtonKind.ghost;
+            clicked => { MappingState.show-add = false; }
+        }
+    }
+}
+
+component ActionsCard inherits Card {
+    HorizontalLayout {
+        SectionTitle {
+            title: "Actions";
+            subtitle: MappingState.actions.length == 0 ? "Nothing happens when you use this input yet" : MappingState.actions.length + " configured";
+            icon: Icons.zap;
+            tone: Theme.success;
+        }
+        if !MappingState.show-add: VerticalLayout {
+            alignment: center;
+            Button {
+                text: "Add action";
+                icon: Icons.plus;
+                kind: ButtonKind.primary;
+                clicked => { MappingState.open-add(); }
+            }
+        }
+    }
+    for a in MappingState.actions: Panel {
+        pad: 10px;
+        HorizontalLayout {
+            spacing: 10px;
+            VerticalLayout {
+                alignment: center;
+                IconTile {
+                    size: 32px;
+                    icon: a.kind == 1 ? Icons.braces : a.kind == 2 ? Icons.terminal : a.kind == 3 ? Icons.sliders : a.kind == 4 ? Icons.lever : a.kind == 5 ? Icons.plane : Icons.zap;
+                    tone: a.kind == 5 ? Theme.warning : a.kind == 1 ? Theme.violet : a.kind == 2 ? Theme.violet : Theme.accent;
+                }
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 3px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Pill { text: a.trigger; tone: Theme.accent; }
+                    if a.condition != "": Pill { text: a.condition; tone: Theme.warning; }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                Mono {
+                    text: a.title;
+                    font-size: Theme.fs-m;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+                if a.detail != "": Text {
+                    text: a.detail;
+                    color: Theme.text-3;
+                    font-size: Theme.fs-s;
+                    overflow: elide;
+                }
+            }
+            if a.testable: VerticalLayout {
+                alignment: center;
+                Button {
+                    text: "Test";
+                    icon: Icons.zap;
+                    small: true;
+                    kind: ButtonKind.accent;
+                    clicked => { MappingState.test-action(a.def-index, a.act-index); }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: Icons.trash;
+                    tint: Theme.danger;
+                    clicked => { MappingState.delete-action(a.def-index, a.act-index); }
+                }
+            }
+        }
+    }
+    if MappingState.show-add: AddActionForm { }
+}
+
+export component MappingPage inherits Rectangle {
+    if MappingState.no-devices: VerticalLayout {
+        alignment: center;
+        EmptyState {
+            icon: Icons.gamepad;
+            title: "No flight hardware detected";
+            text: "Plug in your joystick, throttle, yoke or panel, then rescan.";
+        }
+        HorizontalLayout {
+            alignment: center;
+            Button {
+                text: "Rescan hardware";
+                icon: Icons.refresh;
+                kind: ButtonKind.primary;
+                clicked => { AppState.rescan-devices(); }
+            }
+        }
+    }
+    if !MappingState.no-devices: HorizontalLayout {
+        padding: 26px;
+        padding-top: 8px;
+        spacing: 16px;
+        VerticalLayout {
+            width: 330px;
+            spacing: 14px;
+            DeviceList { }
+            InputList { vertical-stretch: 1; }
+        }
+        sv := ScrollView {
+            horizontal-stretch: 1;
+            VerticalLayout {
+                width: sv.visible-width;
+                alignment: start;
+                spacing: 14px;
+                padding-right: 4px;
+                if MappingState.selected-input == "": Card {
+                    EmptyState {
+                        icon: Icons.target;
+                        title: "Pick an input";
+                        text: "Choose a button or axis on the left, or simply move a control on your hardware: AeroDeck follows it.";
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        Pill { text: MappingState.device-meta; tone: Theme.text-2; mono: true; }
+                    }
+                }
+                if MappingState.selected-input != "": Card {
+                    HorizontalLayout {
+                        spacing: 14px;
+                        IconTile {
+                            size: 46px;
+                            icon: MappingState.is-axis ? Icons.sliders : MappingState.is-hat ? Icons.crosshair : Icons.button;
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            spacing: 4px;
+                            Text {
+                                text: MappingState.selected-label;
+                                color: Theme.text;
+                                font-size: Theme.fs-xl;
+                                font-weight: 700;
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Mono { text: MappingState.selected-input; color: Theme.text-3; font-size: Theme.fs-xs; }
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: "on " + MappingState.device-name;
+                                    color: Theme.text-2;
+                                    font-size: Theme.fs-s;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        if MappingState.is-axis: VerticalLayout {
+                            alignment: center;
+                            Segmented {
+                                items: ["Sim axis", "Calibrated lever"];
+                                current <=> MappingState.axis-mode;
+                                changed(i) => { MappingState.axis-mode-changed(i); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            IconButton {
+                                icon: Icons.x;
+                                clicked => { MappingState.deselect(); }
+                            }
+                        }
+                    }
+                }
+                if MappingState.selected-input != "" && MappingState.is-axis && MappingState.axis-mode == 0: AxisCard { }
+                if MappingState.selected-input != "" && MappingState.is-axis && MappingState.axis-mode == 1: LeverCard { }
+                if MappingState.selected-input != "" && MappingState.is-axis: ZonesCard { }
+                if MappingState.selected-input != "": ActionsCard { }
+                Rectangle { height: 8px; }
+            }
+        }
+    }
+}

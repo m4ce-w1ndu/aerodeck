@@ -5,6 +5,6 @@ Comment=High-performance flight simulator hardware engine & controller bridge
 Exec=aerodeck
 Icon=aerodeck
 Terminal=false
-Categories=Utility;Game;Simulation;
+Categories=Game;Simulation;
 StartupWMClass=aerodeck
 Keywords=flight;simulator;spad;controller;joystick;yoke;msfs;simconnect;

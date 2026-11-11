@@ -176,6 +176,7 @@ fn main() -> Result<()> {
             println!("{}", "     Compatible with SPAD.neXt Profiles (Linux/Windows)  ".bright_cyan());
             println!("{}", "=========================================================".bright_blue());
             println!("Launching AeroDeck Interactive Graphical Interface...");
+            enter_data_dir();
             gui::run_gui(None, "127.0.0.1".to_string(), 45454)
         }
         Some(Commands::Gui { profile, simconnect }) => {
@@ -185,6 +186,9 @@ fn main() -> Result<()> {
             println!("{}", "     Compatible with SPAD.neXt Profiles (Linux/Windows)  ".bright_cyan());
             println!("{}", "=========================================================".bright_blue());
             println!("Launching AeroDeck Interactive Graphical Interface...");
+            // Resolve the profile before switching to the data directory.
+            let profile = profile.map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+            enter_data_dir();
             gui::run_gui(profile, host, port)
         }
         Some(cmd) => {
@@ -192,6 +196,30 @@ fn main() -> Result<()> {
                 .enable_all()
                 .build()?;
             rt.block_on(run_cli_command(cmd))
+        }
+    }
+}
+
+/// AeroDeck keeps profiles, aircraft assignments and the SPAD.neXt account in its working
+/// directory. A checkout or portable folder that already holds them keeps working as is;
+/// otherwise (e.g. launched from the application menu) the data lives in
+/// `$XDG_DATA_HOME/aerodeck` (`~/.local/share/aerodeck`). `AERODECK_HOME` overrides both.
+fn enter_data_dir() {
+    let markers = ["profiles", "aircraft_assignments.json", "spad_account.conf", "default_c172.xml"];
+    let target = match std::env::var_os("AERODECK_HOME") {
+        Some(dir) => Some(std::path::PathBuf::from(dir)),
+        None if markers.iter().any(|m| std::path::Path::new(m).exists()) => None,
+        None => std::env::var_os("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share")))
+            .map(|d| d.join("aerodeck")),
+    };
+    if let Some(dir) = target {
+        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::env::set_current_dir(&dir)) {
+            tracing::warn!("Cannot use data directory {}: {}", dir.display(), e);
+        } else {
+            tracing::info!("Data directory: {}", dir.display());
         }
     }
 }

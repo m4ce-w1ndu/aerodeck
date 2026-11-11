@@ -86,7 +86,11 @@ fn try_install() -> std::io::Result<()> {
     for (rel, bytes) in ICONS {
         changed |= write_if_changed(&home.join("icons/hicolor").join(rel), bytes)?;
     }
-    let exe = std::env::current_exe()?;
+    // Inside an AppImage the binary lives in a temporary mount: point at the .AppImage file.
+    let exe = match std::env::var_os("APPIMAGE") {
+        Some(appimage) => PathBuf::from(appimage),
+        None => std::env::current_exe()?,
+    };
     changed |= write_if_changed(&local, desktop_entry(&exe).as_bytes())?;
 
     if changed {

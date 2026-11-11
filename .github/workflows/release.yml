@@ -1,0 +1,109 @@
+name: Release
+
+# Push a tag such as v0.3.0 to build the Linux packages and publish a GitHub Release.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build, e.g. v0.3.0
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux packages
+    # Oldest supported runner: the binaries then run on glibc 2.35 and newer
+    # (Ubuntu 22.04, Debian 12+, Fedora 36+, Arch, ...).
+    runs-on: ubuntu-22.04
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check that the tag matches Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          test "v$version" = "$TAG" || { echo "Tag $TAG does not match Cargo.toml version $version"; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libudev-dev libfontconfig1-dev libxkbcommon-dev file desktop-file-utils
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Test
+        run: cargo test --release --locked
+
+      - name: Packaging tools
+        run: cargo install --locked cargo-deb cargo-generate-rpm
+
+      - name: Debian / Ubuntu package
+        run: |
+          mkdir -p dist
+          desktop-file-validate packaging/aerodeck.desktop
+          cargo deb --no-build --output dist/
+
+      - name: Fedora / openSUSE package
+        run: |
+          strip target/release/aerodeck
+          cargo generate-rpm --output dist/
+
+      - name: Portable tarball
+        run: |
+          name="aerodeck-$VERSION-x86_64-linux"
+          stage="target/$name"
+          mkdir -p "$stage/bin" "$stage/share/applications"
+          cp target/release/aerodeck "$stage/bin/"
+          cp packaging/aerodeck.desktop "$stage/share/applications/"
+          cp -r packaging/icons "$stage/share/"
+          cp packaging/install.sh README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE "$stage/"
+          tar -C target -czf "dist/$name.tar.gz" "$name"
+
+      - name: AppImage
+        run: |
+          wget -q -O linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy
+          LINUXDEPLOY="$PWD/linuxdeploy" packaging/appimage.sh "$VERSION"
+
+      - name: Arch Linux PKGBUILD
+        run: cp packaging/arch/PKGBUILD dist/PKGBUILD
+
+      - name: Checksums and release notes
+        run: |
+          (cd dist && sha256sum * > SHA256SUMS)
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          cat >> notes.md <<'NOTES'
+
+          ### Install
+          - **Debian / Ubuntu**: `sudo apt install ./aerodeck_*_amd64.deb`
+          - **Fedora / openSUSE**: `sudo dnf install ./aerodeck-*.x86_64.rpm`
+          - **Arch / CachyOS / Manjaro**: download `PKGBUILD`, then `makepkg -si`
+          - **Any distribution**: `chmod +x AeroDeck-*.AppImage` and run it, or unpack the tarball and run `./install.sh`
+          NOTES
+          ls -l dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: AeroDeck ${{ env.TAG }}
+          body_path: notes.md
+          files: dist/*

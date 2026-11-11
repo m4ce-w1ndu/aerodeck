@@ -33,3 +33,65 @@ slint-build = "1.18"
 [features]
 default = ["hardware"]
 hardware = ["dep:hidapi"]
+
+# --- Linux packages (built by .github/workflows/release.yml) ---------------------------
+# OpenGL, Wayland, X11 and xkbcommon are loaded at runtime (dlopen), so they are listed
+# explicitly; $auto adds what the binary links against (libudev, fontconfig, glibc).
+
+[package.metadata.deb]
+maintainer = "Simone Rolando"
+copyright = "2026, Simone Rolando"
+section = "games"
+priority = "optional"
+extended-description = """\
+AeroDeck connects flight hardware (joysticks, throttle quadrants, panels) to Microsoft \
+Flight Simulator running under Steam Proton, using SPAD.neXt-compatible profiles."""
+depends = "$auto, libudev1, libfontconfig1, libgl1, libegl1, libwayland-client0, libwayland-egl1, libxkbcommon0, libxkbcommon-x11-0, libx11-6, libxcursor1, libxi6, libxrandr2"
+recommends = "xdg-desktop-portal"
+assets = [
+    ["target/release/aerodeck", "usr/bin/", "755"],
+    ["packaging/aerodeck.desktop", "usr/share/applications/", "644"],
+    ["packaging/icons/hicolor/16x16/apps/aerodeck.png", "usr/share/icons/hicolor/16x16/apps/", "644"],
+    ["packaging/icons/hicolor/32x32/apps/aerodeck.png", "usr/share/icons/hicolor/32x32/apps/", "644"],
+    ["packaging/icons/hicolor/48x48/apps/aerodeck.png", "usr/share/icons/hicolor/48x48/apps/", "644"],
+    ["packaging/icons/hicolor/64x64/apps/aerodeck.png", "usr/share/icons/hicolor/64x64/apps/", "644"],
+    ["packaging/icons/hicolor/128x128/apps/aerodeck.png", "usr/share/icons/hicolor/128x128/apps/", "644"],
+    ["packaging/icons/hicolor/256x256/apps/aerodeck.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["packaging/icons/hicolor/512x512/apps/aerodeck.png", "usr/share/icons/hicolor/512x512/apps/", "644"],
+    ["packaging/icons/hicolor/scalable/apps/aerodeck.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["README.md", "usr/share/doc/aerodeck/", "644"],
+    ["CHANGELOG.md", "usr/share/doc/aerodeck/", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "Flight simulator hardware engine and controller bridge (SPAD.neXt profile compatible)"
+license = "MIT OR Apache-2.0"
+assets = [
+    { source = "target/release/aerodeck", dest = "/usr/bin/aerodeck", mode = "755" },
+    { source = "packaging/aerodeck.desktop", dest = "/usr/share/applications/aerodeck.desktop", mode = "644" },
+    { source = "packaging/icons/hicolor/16x16/apps/aerodeck.png", dest = "/usr/share/icons/hicolor/16x16/apps/aerodeck.png", mode = "644" },
+    { source = "packaging/icons/hicolor/32x32/apps/aerodeck.png", dest = "/usr/share/icons/hicolor/32x32/apps/aerodeck.png", mode = "644" },
+    { source = "packaging/icons/hicolor/48x48/apps/aerodeck.png", dest = "/usr/share/icons/hicolor/48x48/apps/aerodeck.png", mode = "644" },
+    { source = "packaging/icons/hicolor/64x64/apps/aerodeck.png", dest = "/usr/share/icons/hicolor/64x64/apps/aerodeck.png", mode = "644" },
+    { source = "packaging/icons/hicolor/128x128/apps/aerodeck.png", dest = "/usr/share/icons/hicolor/128x128/apps/aerodeck.png", mode = "644" },
+    { source = "packaging/icons/hicolor/256x256/apps/aerodeck.png", dest = "/usr/share/icons/hicolor/256x256/apps/aerodeck.png", mode = "644" },
+    { source = "packaging/icons/hicolor/512x512/apps/aerodeck.png", dest = "/usr/share/icons/hicolor/512x512/apps/aerodeck.png", mode = "644" },
+    { source = "packaging/icons/hicolor/scalable/apps/aerodeck.svg", dest = "/usr/share/icons/hicolor/scalable/apps/aerodeck.svg", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/aerodeck/README.md", mode = "644", doc = true },
+    { source = "CHANGELOG.md", dest = "/usr/share/doc/aerodeck/CHANGELOG.md", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+# Library capabilities rather than package names, so the same RPM works on Fedora and openSUSE.
+"libudev.so.1()(64bit)" = "*"
+"libfontconfig.so.1()(64bit)" = "*"
+"libGL.so.1()(64bit)" = "*"
+"libEGL.so.1()(64bit)" = "*"
+"libwayland-client.so.0()(64bit)" = "*"
+"libwayland-egl.so.1()(64bit)" = "*"
+"libxkbcommon.so.0()(64bit)" = "*"
+"libxkbcommon-x11.so.0()(64bit)" = "*"
+"libX11.so.6()(64bit)" = "*"
+"libXcursor.so.1()(64bit)" = "*"
+"libXi.so.6()(64bit)" = "*"
+"libXrandr.so.2()(64bit)" = "*"

@@ -1,0 +1,53 @@
+# Maintainer: Simone Rolando
+# Arch Linux / CachyOS / Manjaro: builds the tagged release from source.
+#   cd packaging/arch && makepkg -si
+pkgname=aerodeck
+pkgver=0.3.0
+pkgrel=1
+pkgdesc="Flight simulator hardware engine and controller bridge (SPAD.neXt profile compatible)"
+arch=('x86_64')
+url="https://github.com/m4ce-w1ndu/aerodeck"
+license=('MIT' 'Apache-2.0')
+# OpenGL, Wayland, X11 and xkbcommon are loaded at runtime.
+depends=('gcc-libs' 'glibc' 'systemd-libs' 'fontconfig' 'hicolor-icon-theme'
+         'libglvnd' 'wayland' 'libxkbcommon' 'libxkbcommon-x11'
+         'libx11' 'libxcursor' 'libxi' 'libxrandr')
+optdepends=('xdg-desktop-portal: file pickers for importing and exporting profiles')
+makedepends=('cargo' 'git')
+options=('!lto')
+source=("$pkgname::git+https://github.com/m4ce-w1ndu/aerodeck.git#tag=v$pkgver")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --release --lib
+}
+
+package() {
+  cd "$pkgname"
+  install -Dm755 target/release/aerodeck "$pkgdir/usr/bin/aerodeck"
+  install -Dm644 packaging/aerodeck.desktop "$pkgdir/usr/share/applications/aerodeck.desktop"
+  for size in 16 32 48 64 128 256 512; do
+    install -Dm644 "packaging/icons/hicolor/${size}x${size}/apps/aerodeck.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/aerodeck.png"
+  done
+  install -Dm644 packaging/icons/hicolor/scalable/apps/aerodeck.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/aerodeck.svg"
+  install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

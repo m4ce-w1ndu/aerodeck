@@ -126,7 +126,24 @@ To launch the GUI:
 - **Simulator**: SimConnect connection, Steam Proton prefix detection, SimConnect.xml port and scope, pipe-bridge self-test, config previews.
 - **Logs**: filterable, searchable live log.
 
-### 5.2 Build
+### 5.2 Install
+Every tagged release on the [Releases page](https://github.com/m4ce-w1ndu/aerodeck/releases) ships Linux x86_64 packages, built by GitHub Actions:
+
+| Distribution | Package | Install |
+| :--- | :--- | :--- |
+| Debian, Ubuntu, Mint, Pop!_OS | `aerodeck_<version>-1_amd64.deb` | `sudo apt install ./aerodeck_*_amd64.deb` |
+| Fedora, openSUSE | `aerodeck-<version>-1.x86_64.rpm` | `sudo dnf install ./aerodeck-*.x86_64.rpm` (`zypper install` on openSUSE) |
+| Arch, CachyOS, Manjaro | `PKGBUILD` (also in `packaging/arch/`) | `makepkg -si` in the folder holding the PKGBUILD |
+| Any distribution | `AeroDeck-<version>-x86_64.AppImage` | `chmod +x AeroDeck-*.AppImage`, then run it |
+| Any distribution | `aerodeck-<version>-x86_64-linux.tar.gz` | unpack, then `./install.sh` (to `~/.local`) or `sudo ./install.sh /usr/local` |
+
+Packages need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later). Installed from a package or the menu, AeroDeck keeps profiles, aircraft assignments and the SPAD.neXt account in `~/.local/share/aerodeck`; run from a folder that already has a `profiles/` directory (such as this repository) it uses that folder. `AERODECK_HOME=/some/dir` overrides both.
+
+There is no Windows build: AeroDeck exists to run SPAD.neXt profiles on Linux, and its hardware layer (evdev, hidraw) and Proton integration are Linux-only. On Windows, use SPAD.neXt itself.
+
+Releases are cut by pushing a `vX.Y.Z` tag matching the `Cargo.toml` version: `.github/workflows/release.yml` builds and tests, packages everything and publishes the GitHub Release with the CHANGELOG section as notes. `.github/workflows/ci.yml` builds, lints and tests every push and pull request.
+
+### 5.2.1 Build
 ```bash
 cargo build --release
 ```

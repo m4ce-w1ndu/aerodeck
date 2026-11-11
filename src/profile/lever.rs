@@ -105,10 +105,22 @@ pub fn has_reverse(action: &EventActionRangedAxis) -> bool {
     c.contains("THROTTLE") && !c.contains("NOREVERSE")
 }
 
-/// Reverse amount in `0.0..=1.0` when the lever is past the idle zone on the reverse side
-/// (0 at the end of the idle detent, 1 inside the `REVERSE`/`REVERSETO` zone); `None` in the
-/// forward range. Without a `REVERSE` zone the far end of the device range is full reverse.
-pub fn reverse_amount(action: &EventActionRangedAxis, raw: i32, dev_min: i32, dev_max: i32) -> Option<f64> {
+/// Default reverse gate, in percent of the travel between the idle detent and the `REVERSE` zone.
+pub const DEFAULT_REVERSE_GATE: f64 = 20.0;
+/// How far (percent of the same travel) the lever must come back below the gate to stow.
+pub const REVERSE_GATE_HYSTERESIS: f64 = 4.0;
+
+/// Reverse gate of a throttle in percent (`REVERSEGATE` option, default [`DEFAULT_REVERSE_GATE`]).
+/// Just past the idle detent the lever still means forward idle: resting a hand on a lever
+/// sitting in the detent pushes it a little way back, which must not deploy the reversers.
+pub fn reverse_gate(action: &EventActionRangedAxis) -> f64 {
+    action.option_f64("REVERSEGATE").unwrap_or(DEFAULT_REVERSE_GATE).clamp(0.0, 90.0)
+}
+
+/// Fraction of the travel from the far edge of the idle zone (0) to the `REVERSE` zone (1)
+/// when the lever is past the idle zone on the reverse side; `None` in the forward range.
+/// Without a `REVERSE` zone the far end of the device range is full reverse.
+pub fn reverse_travel(action: &EventActionRangedAxis, raw: i32, dev_min: i32, dev_max: i32) -> Option<f64> {
     if !has_reverse(action) {
         return None;
     }
@@ -131,26 +143,56 @@ pub fn reverse_amount(action: &EventActionRangedAxis, raw: i32, dev_min: i32, de
     Some(((raw - idle_far) / span).clamp(0.0, 1.0))
 }
 
-/// Sim events to send for a lever movement.
+/// Reverse amount in `0.0..=1.0` (0 = reverse idle at the gate, 1 inside the `REVERSE` zone),
+/// or `None` while the lever is forward of the reverse gate.
+///
+/// `was_reverse` is the previous state: once engaged, reverse stays engaged until the lever
+/// comes back [`REVERSE_GATE_HYSTERESIS`] below the gate, so jitter at the gate does not
+/// deploy and stow the reversers repeatedly.
+pub fn reverse_amount(action: &EventActionRangedAxis, raw: i32, dev_min: i32, dev_max: i32, was_reverse: bool) -> Option<f64> {
+    let t = reverse_travel(action, raw, dev_min, dev_max)?;
+    let gate = reverse_gate(action) / 100.0;
+    let threshold = if was_reverse { (gate - REVERSE_GATE_HYSTERESIS / 100.0).max(0.0) } else { gate };
+    if t < threshold {
+        return None;
+    }
+    if gate >= 1.0 {
+        return Some(1.0);
+    }
+    Some(((t - gate) / (1.0 - gate)).clamp(0.0, 1.0))
+}
+
+/// Sim events to send for a lever movement (stateless: reverse engages at the gate).
+pub fn lever_outputs(action: &EventActionRangedAxis, raw: i32, dev_min: i32, dev_max: i32) -> Option<Vec<(String, i32)>> {
+    lever_outputs_with_state(action, raw, dev_min, dev_max, false).map(|(out, _)| out)
+}
+
+/// Sim events to send for a lever movement, plus whether the lever is now in reverse.
 ///
 /// Forward travel uses the `*_AXIS_SET_EX1` / `AXIS_*_SET` events (-16383 idle .. 16383 full).
-/// Past the idle detent of a reverse-capable throttle, `THROTTLEn_SET` with a negative value
+/// Past the reverse gate of a reverse-capable throttle, `THROTTLEn_SET` with a negative value
 /// (0 .. -16383) is sent instead, which MSFS interprets as reverse thrust.
-pub fn lever_outputs(action: &EventActionRangedAxis, raw: i32, dev_min: i32, dev_max: i32) -> Option<Vec<(String, i32)>> {
+pub fn lever_outputs_with_state(
+    action: &EventActionRangedAxis,
+    raw: i32,
+    dev_min: i32,
+    dev_max: i32,
+    was_reverse: bool,
+) -> Option<(Vec<(String, i32)>, bool)> {
     let kind = LeverKind::from_config_id(&action.config_id)?;
     let engines: Vec<u8> = if kind.per_engine() {
         (1..=4u8).filter(|n| action.option_bool(&format!("OPTION{}", n))).collect()
     } else {
         Vec::new()
     };
-    if let Some(rev) = reverse_amount(action, raw, dev_min, dev_max) {
+    if let Some(rev) = reverse_amount(action, raw, dev_min, dev_max, was_reverse) {
         let value = -(rev * 16383.0).round() as i32;
         let out = if engines.is_empty() {
             vec![("THROTTLE_SET".to_string(), value)]
         } else {
             engines.iter().map(|n| (format!("THROTTLE{}_SET", n), value)).collect()
         };
-        return Some(out);
+        return Some((out, true));
     }
     let pos = lever_position(action, raw, dev_min, dev_max);
     let value = (-16383.0 + pos * 32766.0).round() as i32;
@@ -160,7 +202,7 @@ pub fn lever_outputs(action: &EventActionRangedAxis, raw: i32, dev_min: i32, dev
     } else {
         engines.into_iter().filter_map(|n| kind.event(Some(n)).map(|e| (e, value))).collect()
     };
-    Some(out)
+    Some((out, false))
 }
 
 #[cfg(test)]
@@ -207,8 +249,26 @@ mod tests {
         assert_eq!(out(0), vec![("THROTTLE1_AXIS_SET_EX1".to_string(), 16383)]);
         assert_eq!(out(49500), vec![("THROTTLE1_AXIS_SET_EX1".to_string(), -16383)], "inside detent = idle");
         assert_eq!(out(65535), vec![("THROTTLE1_SET".to_string(), -16383)], "full reverse");
-        let half = out((50934 + 65535) / 2)[0].1;
+        // Just past the detent (hand resting on the lever) is still forward idle
+        assert_eq!(out(51500), vec![("THROTTLE1_AXIS_SET_EX1".to_string(), -16383)], "inside reverse gate");
+        // Halfway between the gate (20%) and full reverse
+        let gate = 50934.0 + (65535.0 - 50934.0) * 0.2;
+        let half = out(((gate + 65535.0) / 2.0) as i32)[0].1;
         assert!((-8300..=-8000).contains(&half), "half reverse, got {}", half);
+
+        // Hysteresis: once in reverse, stays engaged slightly below the gate
+        let just_below = (gate - 300.0) as i32;
+        assert!(!lever_outputs_with_state(&l, just_below, 0, 65535, false).unwrap().1);
+        let (o, rev) = lever_outputs_with_state(&l, just_below, 0, 65535, true).unwrap();
+        assert!(rev);
+        assert_eq!(o[0], ("THROTTLE1_SET".to_string(), 0));
+        let back = (50934.0 + (65535.0 - 50934.0) * 0.1) as i32;
+        assert!(!lever_outputs_with_state(&l, back, 0, 65535, true).unwrap().1, "stows below the hysteresis");
+
+        // Gate 0 = old behaviour, reverse right past the detent
+        let mut g0 = l.clone();
+        g0.set_option("REVERSEGATE", "0");
+        assert_eq!(lever_outputs(&g0, 51500, 0, 65535).unwrap()[0].0, "THROTTLE1_SET");
 
         // explicit reverse zone: everything beyond 60000 is full reverse
         let mut z = l.clone();

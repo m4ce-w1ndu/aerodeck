@@ -367,8 +367,13 @@ impl ProfileExecutor {
                     if !send_axis {
                         continue;
                     }
-                    match super::lever::lever_outputs(lever, raw, min, max) {
-                        Some(outputs) => {
+                    let rev_key = format!("{}|{}|reverse|{}", device_id, bound_to, lever.config_id);
+                    let was_reverse = self.zone_state.lock().ok().and_then(|m| m.get(&rev_key).copied()).unwrap_or(false);
+                    match super::lever::lever_outputs_with_state(lever, raw, min, max, was_reverse) {
+                        Some((outputs, in_reverse)) => {
+                            if let Ok(mut m) = self.zone_state.lock() {
+                                m.insert(rev_key, in_reverse);
+                            }
                             for (event_name, value) in outputs {
                                 if !sent.contains(&event_name) {
                                     sent.push(event_name.clone());
@@ -707,7 +712,7 @@ fn parse_event_value(v: Option<&str>) -> u32 {
     v.parse::<f64>().map(|f| f.round() as i64 as u32).unwrap_or(0)
 }
 
-fn option_is_true(opts: Option<&ProfileOptionsList>, key: &str) -> bool {
+pub fn option_is_true(opts: Option<&ProfileOptionsList>, key: &str) -> bool {
     opts.map(|o| {
         o.items.iter().any(|opt| {
             opt.key.eq_ignore_ascii_case(key)

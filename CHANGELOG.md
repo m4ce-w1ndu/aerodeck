@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-11
+
+### Added
+- Thrust reverse on throttle axes: the "Throttle + reverse" lever sends reverse thrust past the idle detent (full reverse in the Reverse zone or at the end of travel).
+- Axis trigger zones (Zone enter / Zone leave) with hysteresis and an optional deadzone that freezes the axis around the zone, e.g. spoiler ARM at the bottom of the speedbrake lever.
+- Trigger zones editor under each axis; Zone enter / Zone leave triggers in the Add Action form.
+- SimVar subscriptions, writes and conditions.
+- PMDG SDK support: event IDs and data layout read from the installed SDK headers; PMDG events, cockpit data and data broadcast (CLI and GUI).
+- SPAD.neXt-compatible input names (BUTTON_n, HATSWITCH_n with POV directions) and PRESSSHORT / PRESSLONG / HELD timing.
+- Calibrated levers (EventActionRangedAxis) for the Thrustmaster TCA quadrant, with a lever editor.
+- PMDG and SimConnect event pickers, multi-aircraft binding, redesigned Variables view.
+- Notices for unmapped inputs.
+
+### Changed
+- Profile merges and snippet imports are additive and no longer wipe device layouts; snippets are cached outside ./profiles.
+- Built-in profiles are no longer written to ./profiles on startup.
+
+### Fixed
+- SimConnect wire protocol framing, port detection, client data definitions and SIMCONNECT_RECV_ID values (bridge data was never read).
+- Layout clipping and missing glyphs in the UI.
+
 ## [0.1.0] - 2026-11-08
 
 ### Added

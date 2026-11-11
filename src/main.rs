@@ -27,7 +27,7 @@ use simconnect::SimConnectClient;
 #[derive(Parser)]
 #[command(name = "aerodeck")]
 #[command(author = "AeroDeck developers")]
-#[command(version = "0.1.0")]
+#[command(version)]
 #[command(about = "AeroDeck: Advanced Flight Simulation Hardware & Telemetry Suite (SPAD.neXt Profile Compatible)", long_about = None)]
 struct Cli {
     #[arg(short, long, default_value = "info")]

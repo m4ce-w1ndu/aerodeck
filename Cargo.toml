@@ -1,6 +1,6 @@
 [package]
 name = "aerodeck"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "AeroDeck: High-performance flight simulator hardware engine & controller bridge (SPAD.neXt profile compatible)"
 authors = ["Simone Rolando"]

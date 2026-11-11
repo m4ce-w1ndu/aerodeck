@@ -25,7 +25,7 @@ jobs:
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
 
@@ -36,9 +36,8 @@ jobs:
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: System libraries
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pkg-config libudev-dev libfontconfig1-dev libxkbcommon-dev file desktop-file-utils
+        timeout-minutes: 15
+        run: .github/scripts/apt-install.sh pkg-config libudev-dev libfontconfig1-dev libxkbcommon-dev file desktop-file-utils
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2

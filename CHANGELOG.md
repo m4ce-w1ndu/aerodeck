@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-11
+
+### Changed
+- New native interface built with Slint, replacing egui: sidebar navigation, an Overview page, a glass-cockpit dark theme and a light theme (remembered), bundled Inter and JetBrains Mono fonts.
+- New application icon (stylised attitude indicator), regenerated in every size, `.ico` and hicolor theme.
+- "Follow hardware" in Controls reacts to real axis moves (3 % of travel) instead of jitter.
+- Snippet downloads run in the background instead of freezing the window.
+
+### Added
+- Window icon on Wayland when AeroDeck is not installed (e.g. `cargo run`): the GUI writes a hidden `aerodeck.desktop` and the hicolor icons into `~/.local/share`, unless a system or user installation already provides them.
+- Reverse gate on "Throttle + reverse" levers (`REVERSEGATE`, default 20 % of the travel past the idle detent): resting a hand on the lever no longer deploys the reversers; reverse engages beyond the gate and releases a few percent before it.
+- Linux packages for every release: `.deb` (Debian / Ubuntu), `.rpm` (Fedora / openSUSE), a `PKGBUILD` (Arch / CachyOS / Manjaro), an AppImage and a portable tarball with `install.sh`.
+- GitHub Actions: CI (build, clippy, tests) on every push and pull request; tagging `vX.Y.Z` builds the packages and publishes the GitHub Release.
+- Data directory: outside a folder that already holds AeroDeck data, the GUI keeps profiles, aircraft assignments and the SPAD.neXt account in `~/.local/share/aerodeck` (`AERODECK_HOME` overrides).
+
+### Removed
+- Virtual Saitek panel page and the in-app UI scale buttons (the desktop scale factor applies; `SLINT_SCALE_FACTOR` overrides it).
+
+### Fixed
+- RPN templates inserted their description instead of the code.
+
 ## [0.2.0] - 2026-11-11
 
 ### Added

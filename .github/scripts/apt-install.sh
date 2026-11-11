@@ -1,6 +1,8 @@
 #!/bin/sh
-# Installs Ubuntu packages on a GitHub runner, tolerating slow or broken mirrors:
-# short timeouts, retries, and a switch from the Azure mirror to archive.ubuntu.com.
+# Installs Ubuntu packages on a GitHub runner, tolerating slow or broken mirrors.
+# The runner's Azure mirror (plain HTTP) sometimes hangs for minutes, so the official
+# archive over HTTPS is used from the start; each fetch has a short timeout and the
+# whole thing is retried a few times.
 set -u
 missing=""
 for p in "$@"; do
@@ -8,7 +10,11 @@ for p in "$@"; do
 done
 [ -z "$missing" ] && { echo "Already installed: $*"; exit 0; }
 
-apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources /etc/apt/apt-mirrors.txt; do
+  [ -f "$f" ] && sudo sed -i -E 's#https?://azure\.archive\.ubuntu\.com#https://archive.ubuntu.com#g' "$f"
+done
+
+apt="sudo timeout 300 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
 for attempt in 1 2 3; do
   echo "::group::apt attempt $attempt:$missing"
   # Third-party sources on the runner image may fail to refresh; the Ubuntu archive is what matters.
@@ -18,11 +24,7 @@ for attempt in 1 2 3; do
     exit 0
   fi
   echo "::endgroup::"
-  echo "Install failed, switching to archive.ubuntu.com and retrying"
-  for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
-    [ -f "$f" ] && sudo sed -i 's#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g' "$f"
-  done
-  sleep $((attempt * 15))
+  sleep $((attempt * 10))
 done
 echo "::error::Could not install:$missing"
 exit 1

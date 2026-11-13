@@ -22,6 +22,10 @@ pub(crate) struct MappingUi {
     pub listed: Vec<String>,
     /// Lever being edited: (input, action)
     pub lever: Option<(String, EventActionRangedAxis)>,
+    /// The lever draft has edits that are not saved to the profile yet
+    pub lever_touched: bool,
+    /// Unsaved lever drafts of inputs you moved away from, by `device id|input`
+    pub lever_drafts: HashMap<String, EventActionRangedAxis>,
     pub zone: ZoneDraft,
     /// Trigger ids behind the trigger segmented control
     pub triggers: Vec<String>,
@@ -30,6 +34,26 @@ pub(crate) struct MappingUi {
     /// Action kinds behind the action-type control
     pub kinds: Vec<NewActionKind>,
     pub pmdg_event: String,
+}
+
+/// After an input moves, axes cannot take the selection away from it for this long.
+const AXIS_FOLLOW_HOLD: Duration = Duration::from_millis(1500);
+
+fn draft_key(dev: &ConnectedDevice, input: &str) -> String {
+    format!("{}|{}", dev.id, input)
+}
+
+impl MappingUi {
+    /// Keeps the lever being edited, if it has unsaved changes, so switching to another
+    /// input and back does not throw the calibration away.
+    fn stash_lever_draft(&mut self, dev: Option<&ConnectedDevice>) {
+        let touched = std::mem::take(&mut self.lever_touched);
+        if let (Some((input, lever)), Some(dev)) = (self.lever.take(), dev) {
+            if touched {
+                self.lever_drafts.insert(draft_key(dev, &input), lever);
+            }
+        }
+    }
 }
 
 fn dev_range(live: Option<&LiveAxis>) -> (i32, i32) {
@@ -66,7 +90,12 @@ impl App {
 
     /// Selects the input touched on the hardware, switching device if needed.
     /// Returns true when the whole page was refreshed.
-    pub(crate) fn follow_input(self: &Rc<Self>, device: &str, bound_to: &str) -> bool {
+    ///
+    /// Axes are followed more cautiously than buttons: an axis never takes the selection
+    /// away from an input that is being worked on (moved in the last moments, or a lever
+    /// with unsaved calibration), so moving twin throttle levers together, or nudging the
+    /// stick while pressing one of its buttons, does not bounce the page between inputs.
+    pub(crate) fn follow_input(self: &Rc<Self>, device: &str, bound_to: &str, is_axis: bool) -> bool {
         let Some(ui) = self.ui.upgrade() else { return false };
         let ms = ui.global::<MappingState>();
         if !ms.get_follow() || ui.global::<AppState>().get_page() != 1 || ms.get_show_add() {
@@ -87,6 +116,19 @@ impl App {
             if st.m.device_idx == idx && st.m.selected_input == bound_to {
                 return false;
             }
+            if is_axis && !st.m.selected_input.is_empty() {
+                if st.m.lever_touched {
+                    return false;
+                }
+                let busy = st.devices.get(st.m.device_idx).is_some_and(|d| {
+                    st.input_activity
+                        .get(&format!("{}|{}", d.name, st.m.selected_input))
+                        .is_some_and(|t| t.elapsed() < AXIS_FOLLOW_HOLD)
+                });
+                if busy {
+                    return false;
+                }
+            }
         }
         {
             let mut st = self.st.borrow_mut();
@@ -100,8 +142,8 @@ impl App {
         let dev = self.current_device();
         {
             let mut st = self.st.borrow_mut();
+            st.m.stash_lever_draft(dev.as_ref());
             st.m.selected_input = id.to_string();
-            st.m.lever = None;
             st.m.pmdg_event.clear();
         }
         if let (Some(ui), Some(dev)) = (self.ui.upgrade(), dev.as_ref()) {
@@ -129,8 +171,16 @@ impl App {
         }
         let live = self.live_for(dev, input);
         let (lo, hi) = dev_range(live.as_ref());
-        let lever = ed::existing_lever(&self.st.borrow().profile, dev, input).unwrap_or_else(|| ed::default_lever(lo, hi));
-        self.st.borrow_mut().m.lever = Some((input.to_string(), lever));
+        let mut st = self.st.borrow_mut();
+        // Resume the unsaved calibration left on this input, if any.
+        if let Some(draft) = st.m.lever_drafts.remove(&draft_key(dev, input)) {
+            st.m.lever = Some((input.to_string(), draft));
+            st.m.lever_touched = true;
+            return;
+        }
+        let lever = ed::existing_lever(&st.profile, dev, input).unwrap_or_else(|| ed::default_lever(lo, hi));
+        st.m.lever = Some((input.to_string(), lever));
+        st.m.lever_touched = false;
     }
 
     pub(crate) fn refresh_mapping_all(self: &Rc<Self>) {
@@ -636,6 +686,7 @@ impl App {
         let mut st = self.st.borrow_mut();
         if let Some((_, lv)) = st.m.lever.as_mut() {
             f(lv, lo, hi, live.as_ref());
+            st.m.lever_touched = true;
         }
     }
 
@@ -669,9 +720,10 @@ pub(crate) fn wire(app: &Rc<App>, ui: &AppWindow) {
     ms.on_select_device(move |i| {
         {
             let mut st = a.st.borrow_mut();
+            let dev = st.devices.get(st.m.device_idx).cloned();
+            st.m.stash_lever_draft(dev.as_ref());
             st.m.device_idx = i.max(0) as usize;
             st.m.selected_input.clear();
-            st.m.lever = None;
         }
         a.refresh_mapping_all();
     });
@@ -760,6 +812,7 @@ pub(crate) fn wire(app: &Rc<App>, ui: &AppWindow) {
     ms.on_save_lever(move || {
         let action = a.st.borrow().m.lever.as_ref().map(|(_, l)| l.clone());
         if let Some(action) = action {
+            a.st.borrow_mut().m.lever_touched = false;
             a.edit_profile(|p, d, i| {
                 ed::set_value_definition(p, d, i, vec![EventActionItem::RangedAxis(action)]);
                 true
@@ -769,7 +822,11 @@ pub(crate) fn wire(app: &Rc<App>, ui: &AppWindow) {
     });
     let a = app.clone();
     ms.on_reset_lever(move || {
-        a.st.borrow_mut().m.lever = None;
+        {
+            let mut st = a.st.borrow_mut();
+            st.m.lever = None;
+            st.m.lever_touched = false;
+        }
         a.refresh_selected();
         a.refresh_mapping_live();
     });

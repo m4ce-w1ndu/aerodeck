@@ -71,8 +71,9 @@ pub(crate) struct State {
     pub device_activity: HashMap<String, Instant>,
     pub input_activity: HashMap<String, Instant>,
     pub live_axes: HashMap<String, LiveAxis>,
-    /// Axis position when it was last followed, to tell a deliberate move from jitter
-    pub axis_anchor: HashMap<String, i32>,
+    /// Where each axis' current movement started and when it last moved, to tell a
+    /// deliberate move from jitter
+    pub axis_gesture: HashMap<String, (i32, Instant)>,
 
     pub lvars: Vec<String>,
     pub lvar_values: HashMap<String, f64>,
@@ -177,7 +178,7 @@ pub fn run(profile_path: Option<PathBuf>, host: String, port: u16) -> Result<()>
         device_activity: HashMap::new(),
         input_activity: HashMap::new(),
         live_axes: HashMap::new(),
-        axis_anchor: HashMap::new(),
+        axis_gesture: HashMap::new(),
         lvars: Vec::new(),
         lvar_values: HashMap::new(),
         simvars: Vec::new(),
@@ -483,7 +484,8 @@ impl App {
         let mut mapping_lists = false;
         let mut vars = false;
         let mut profiles = false;
-        let mut follow: Option<(String, String)> = None;
+        // (device, input, is_axis): a button press wins over axis movement in the same tick
+        let mut follow: Option<(String, String, bool)> = None;
 
         // Drain backend events (bounded per tick so the UI stays responsive)
         let mut events = Vec::new();
@@ -556,7 +558,7 @@ impl App {
                         st.feed.truncate(9);
                     }
                     if !is_axis {
-                        follow = Some((device.clone(), bound_to.clone()));
+                        follow = Some((device.clone(), bound_to.clone(), false));
                     }
                     st.last_input = Some((device, bound_to, action, time));
                     feed = true;
@@ -568,13 +570,21 @@ impl App {
                     st.live_axes.insert(key.clone(), live.clone());
                     st.live_axes.insert(bound_to.clone(), live);
                     st.device_activity.insert(device.clone(), time);
-                    // Follow an axis only when it really moves (3 % of its travel), not on jitter.
-                    let span = (max - min).abs().max(1);
-                    let anchor = *st.axis_anchor.entry(key.clone()).or_insert(raw_value);
-                    if (raw_value - anchor).abs() * 100 / span >= 3 {
-                        st.axis_anchor.insert(key, raw_value);
+                    // A movement starts when the axis moves after a pause. It lights the input
+                    // past 3 % of travel, and is followed only past AXIS_FOLLOW_PERCENT: jitter
+                    // and small nudges never move the selection.
+                    let span = (max - min).abs().max(1) as i64;
+                    let gesture = st.axis_gesture.entry(key).or_insert((raw_value, time));
+                    if time.saturating_duration_since(gesture.1) > AXIS_GESTURE_PAUSE {
+                        gesture.0 = raw_value;
+                    }
+                    gesture.1 = time;
+                    let travel = (raw_value as i64 - gesture.0 as i64).abs() * 100 / span;
+                    if travel >= 3 {
                         st.input_activity.insert(format!("{}|{}", device, bound_to), time);
-                        follow = Some((device, bound_to));
+                    }
+                    if travel >= AXIS_FOLLOW_PERCENT && !follow.as_ref().is_some_and(|f| !f.2) {
+                        follow = Some((device, bound_to, true));
                     }
                     axis = true;
                 }
@@ -636,8 +646,18 @@ impl App {
             }
         }
 
-        if let Some((device, bound_to)) = follow {
-            if self.follow_input(&device, &bound_to) {
+        // Throttle quadrants close a switch at some detents: a button that fires while an
+        // axis of the same device is moving is part of the lever movement, not a press.
+        if let Some((device, _, false)) = &follow {
+            let st = self.st.borrow();
+            let prefix = format!("{}:", device);
+            let lever_moving = st.axis_gesture.iter().any(|(k, (_, t))| k.starts_with(&prefix) && t.elapsed() < DETENT_WINDOW);
+            if lever_moving {
+                follow = None;
+            }
+        }
+        if let Some((device, bound_to, is_axis)) = follow {
+            if self.follow_input(&device, &bound_to, is_axis) {
                 mapping_lists = false;
             }
         }
@@ -707,6 +727,13 @@ impl App {
         }
     }
 }
+
+/// An axis is followed once a single movement covers this much of its travel (percent).
+const AXIS_FOLLOW_PERCENT: i64 = 20;
+/// An axis that stays still this long starts a new movement.
+const AXIS_GESTURE_PAUSE: Duration = Duration::from_millis(600);
+/// Buttons firing this close to an axis movement on the same device are detent switches.
+const DETENT_WINDOW: Duration = Duration::from_millis(400);
 
 /// Device names can be long ("Winwing WINCTRL URSA MINOR 32 Joystick L"); keep the start.
 pub(crate) fn short_device(name: &str) -> String {

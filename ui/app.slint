@@ -252,7 +252,8 @@ component TopBar inherits HorizontalLayout {
         alignment: center;
         Rectangle {
             height: 32px;
-            max-width: 320px;
+            // Fixed width: a changing readout must not shift the rest of the top bar.
+            width: 320px;
             border-radius: 16px;
             background: AppState.input-live ? Theme.success.with-alpha(0.1) : Theme.surface-2;
             border-width: 1px;

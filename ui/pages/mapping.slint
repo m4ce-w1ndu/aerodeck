@@ -259,8 +259,10 @@ component LeverCard inherits Card {
                 font-size: Theme.fs-s;
                 overflow: elide;
             }
-            if MappingState.lever-state != "": Text {
+            // Always laid out, so the card does not jump when the lever crosses the detent.
+            Text {
                 text: MappingState.lever-state;
+                overflow: elide;
                 color: Theme.tone(MappingState.lever-state-tone);
                 font-size: Theme.fs-s;
                 font-weight: 600;
@@ -390,7 +392,7 @@ component ZonesCard inherits Card {
         labels: false;
         track-height: 22px;
     }
-    if MappingState.zone-readout != "": Mono { text: MappingState.zone-readout; color: Theme.text-2; }
+    Mono { text: MappingState.zone-readout; color: Theme.text-2; overflow: elide; }
     for z in MappingState.zones: Panel {
         pad: 10px;
         HorizontalLayout {

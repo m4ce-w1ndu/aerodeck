@@ -2,7 +2,7 @@
 # Arch Linux / CachyOS / Manjaro: builds the tagged release from source.
 #   cd packaging/arch && makepkg -si
 pkgname=aerodeck
-pkgver=0.3.0
+pkgver=0.3.1
 pkgrel=1
 pkgdesc="Flight simulator hardware engine and controller bridge (SPAD.neXt profile compatible)"
 arch=('x86_64')

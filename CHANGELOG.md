@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-11-13
+
+### Fixed
+- Controls page no longer jumps around while moving a lever: buttons that throttle quadrants (e.g. Thrustmaster TCA) fire at their detents are not followed while the lever moves, so the lever editor stays open and the calibration is not lost.
+- "Follow hardware" follows an axis only after a deliberate movement (20 % of its travel), and never takes the selection away from an input you are moving or a lever with unsaved calibration; moving twin levers together no longer bounces between them.
+- Unsaved lever calibration is kept when you select another input and resumed when you come back.
+- Live readouts (top bar input pill, lever state, zone readout) keep a fixed size, so the layout no longer shifts as values change.
+
 ## [0.3.0] - 2026-11-11
 
 ### Changed
